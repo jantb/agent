@@ -113,13 +113,13 @@ impl AgentTask {
     }
 
     async fn save_or_emit_error(&mut self) {
-        if let Err(e) = self.session.save(&self.working_dir) {
-            self.emit(AgentEvent::Error(e.to_string())).await;
+        match self.session.save(&self.working_dir) {
+            Ok(()) => debug!("session saved"),
+            Err(e) => self.emit(AgentEvent::Error(e.to_string())).await,
         }
-        debug!("session saved");
     }
 
-    async fn execute_turn(&mut self, use_tool_model: bool) -> TurnPhaseResult {
+    async fn execute_turn(&mut self) -> TurnPhaseResult {
         let history = self.history();
         tokio::select! {
             action = self.action_rx.recv() => {
@@ -129,7 +129,7 @@ impl AgentTask {
                     _ => TurnPhaseResult::Cancelled, // ignore other actions during turn
                 }
             }
-            outcome = self.ollama.stream_turn(&history, &self.tools, self.event_tx.clone(), use_tool_model) => {
+            outcome = self.ollama.stream_turn(&history, &self.tools, self.event_tx.clone()) => {
                 match outcome {
                     Err(e) => TurnPhaseResult::Error(e),
                     Ok(TurnOutcome::Text(content)) => TurnPhaseResult::Text(content),
@@ -143,6 +143,7 @@ impl AgentTask {
         self.session.append_message(SessionMessage::Text {
             role: Role::Assistant,
             content,
+            images: vec![],
         });
         self.save_or_emit_error().await;
         self.emit(AgentEvent::TurnDone).await;
@@ -153,6 +154,7 @@ impl AgentTask {
             self.session.append_message(SessionMessage::Text {
                 role: Role::Assistant,
                 content: text,
+                images: vec![],
             });
         }
         for call in calls {
@@ -199,11 +201,10 @@ impl AgentTask {
                     self.emit(AgentEvent::TurnDone).await;
                 }
                 UserAction::SendMessage(text, images) => {
-                    // images not persisted in session (pre-existing limitation)
-                    let _ = images;
                     self.session.append_message(SessionMessage::Text {
                         role: Role::User,
                         content: text,
+                        images,
                     });
                     self.save_or_emit_error().await;
 
@@ -212,9 +213,8 @@ impl AgentTask {
                         tools = self.tools.len(),
                         "turn start"
                     );
-                    let mut tool_followup = false;
                     'turn: loop {
-                        match self.execute_turn(tool_followup).await {
+                        match self.execute_turn().await {
                             TurnPhaseResult::Text(content) => {
                                 debug!(chars = content.len(), "turn result: text");
                                 self.handle_text_turn(content).await;
@@ -223,7 +223,6 @@ impl AgentTask {
                             TurnPhaseResult::ToolCalls(text, calls) => {
                                 debug!(count = calls.len(), "turn result: tool calls");
                                 self.handle_tool_calls(text, calls).await;
-                                tool_followup = true;
                             }
                             TurnPhaseResult::Cancelled => {
                                 self.emit(AgentEvent::TurnDone).await;
@@ -256,7 +255,7 @@ impl AgentTask {
             },
             Some(def) => match &def.source {
                 ToolSource::BuiltIn => execute_built_in(call, working_dir).await,
-                ToolSource::Mcp { .. } => mcp.execute(call).await,
+                ToolSource::Mcp => mcp.execute(call).await,
             },
         }
     }

@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -56,11 +55,6 @@ pub fn load_config(dir: &Path) -> Result<Option<Config>, ConfigError> {
         })
         .collect();
     Ok(Some(Config { servers }))
-}
-
-pub fn load_config_from_cwd() -> anyhow::Result<Option<Config>> {
-    let dir = std::env::current_dir().context("failed to get current directory")?;
-    load_config(&dir).map_err(Into::into)
 }
 
 #[cfg(test)]

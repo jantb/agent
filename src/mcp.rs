@@ -90,9 +90,7 @@ impl McpClient {
                 name: t["name"].as_str().unwrap_or("").to_string(),
                 description: t["description"].as_str().unwrap_or("").to_string(),
                 parameters: t["inputSchema"].clone(),
-                source: ToolSource::Mcp {
-                    server_name: server_name.to_string(),
-                },
+                source: ToolSource::Mcp,
             })
             .collect();
         debug!(

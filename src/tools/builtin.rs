@@ -537,9 +537,8 @@ pub async fn run_forget(call: &ToolCall, working_dir: &Path) -> Result<String, S
         .map_err(|e| format!("task join error: {e}"))?
 }
 
-pub async fn run_list_memories(call: &ToolCall, working_dir: &Path) -> Result<String, String> {
+pub async fn run_list_memories(_call: &ToolCall, working_dir: &Path) -> Result<String, String> {
     let wd = working_dir.to_path_buf();
-    let _ = call;
     tokio::task::spawn_blocking(move || memory::list_memories(&wd))
         .await
         .map_err(|e| format!("task join error: {e}"))?

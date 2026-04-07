@@ -30,7 +30,12 @@ pub struct Session {
 #[serde(tag = "kind")]
 pub enum SessionMessage {
     #[serde(rename = "text")]
-    Text { role: Role, content: String },
+    Text {
+        role: Role,
+        content: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<String>,
+    },
     #[serde(rename = "tool_call")]
     ToolCall { name: String, arguments: String },
     #[serde(rename = "tool_result")]
@@ -92,8 +97,14 @@ impl Session {
         let mut i = 0;
         while i < self.messages.len() {
             match &self.messages[i] {
-                SessionMessage::Text { role, content } => {
-                    history.push(Message::new(role.clone(), content.clone()));
+                SessionMessage::Text {
+                    role,
+                    content,
+                    images,
+                } => {
+                    let mut msg = Message::new(role.clone(), content.clone());
+                    msg.images = images.clone();
+                    history.push(msg);
                     i += 1;
                 }
                 SessionMessage::ToolCall { .. } => {
@@ -132,6 +143,7 @@ impl From<&ChatMessage> for SessionMessage {
             MessageKind::Text => SessionMessage::Text {
                 role: msg.role.clone(),
                 content: msg.content.clone(),
+                images: vec![],
             },
             MessageKind::ToolCall {
                 name, arguments, ..
@@ -147,6 +159,7 @@ impl From<&ChatMessage> for SessionMessage {
             MessageKind::Thinking => SessionMessage::Text {
                 role: msg.role.clone(),
                 content: String::new(),
+                images: vec![],
             },
         }
     }
@@ -161,7 +174,7 @@ impl From<ChatMessage> for SessionMessage {
 impl From<SessionMessage> for ChatMessage {
     fn from(msg: SessionMessage) -> Self {
         match msg {
-            SessionMessage::Text { role, content } => ChatMessage {
+            SessionMessage::Text { role, content, .. } => ChatMessage {
                 role,
                 content,
                 kind: MessageKind::Text,
@@ -235,6 +248,7 @@ mod tests {
         session.append_message(SessionMessage::Text {
             role: Role::User,
             content: "hello".into(),
+            images: vec![],
         });
         session.save(dir.path()).unwrap();
 
@@ -259,6 +273,7 @@ mod tests {
         session.append_message(SessionMessage::Text {
             role: Role::User,
             content: "hi".into(),
+            images: vec![],
         });
         session.append_message(SessionMessage::ToolCall {
             name: "shell".into(),
@@ -295,10 +310,55 @@ mod tests {
     }
 
     #[test]
+    fn save_and_load_preserves_images() {
+        let dir = tmp();
+        let mut session = Session::new("gpt-4", dir.path());
+        session.append_message(SessionMessage::Text {
+            role: Role::User,
+            content: "describe this".into(),
+            images: vec!["base64data".into()],
+        });
+        session.save(dir.path()).unwrap();
+        let loaded = Session::load(dir.path()).unwrap().unwrap();
+        match &loaded.messages[0] {
+            SessionMessage::Text { images, .. } => assert_eq!(images, &["base64data"]),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn to_ollama_history_includes_images() {
+        let dir = tmp();
+        let mut session = Session::new("gpt-4", dir.path());
+        session.append_message(SessionMessage::Text {
+            role: Role::User,
+            content: "look at this".into(),
+            images: vec!["img1".into(), "img2".into()],
+        });
+        let history = session.to_ollama_history("system");
+        // history[0] = system, history[1] = user message
+        assert_eq!(history[1].images, vec!["img1", "img2"]);
+    }
+
+    #[test]
+    fn to_ollama_history_empty_images_by_default() {
+        let dir = tmp();
+        let mut session = Session::new("gpt-4", dir.path());
+        session.append_message(SessionMessage::Text {
+            role: Role::User,
+            content: "hello".into(),
+            images: vec![],
+        });
+        let history = session.to_ollama_history("system");
+        assert!(history[1].images.is_empty());
+    }
+
+    #[test]
     fn session_message_to_chat_message_roundtrip() {
         let original = SessionMessage::Text {
             role: Role::Assistant,
             content: "hello there".into(),
+            images: vec![],
         };
         let chat: ChatMessage = original.into();
         assert_eq!(chat.role, Role::Assistant);

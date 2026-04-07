@@ -5,10 +5,10 @@ use std::{
 
 use tracing::{debug, warn};
 
-#[allow(dead_code)]
 pub struct MemoryEntry {
     pub name: String,
     pub description: String,
+    #[allow(dead_code)]
     pub tags: Vec<String>,
     pub content: String,
 }

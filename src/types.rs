@@ -48,10 +48,7 @@ pub struct ToolDefinition {
 #[derive(Debug, Clone)]
 pub enum ToolSource {
     BuiltIn,
-    Mcp {
-        #[allow(dead_code)]
-        server_name: String,
-    },
+    Mcp,
 }
 
 #[derive(Debug, Clone)]
@@ -63,7 +60,6 @@ pub struct ToolCall {
 
 #[derive(Debug, Clone)]
 pub struct ToolResult {
-    #[allow(dead_code)]
     pub call_id: String,
     pub output: String,
     pub is_error: bool,
@@ -72,7 +68,7 @@ pub struct ToolResult {
 #[derive(Debug)]
 pub enum AgentEvent {
     ThinkingStarted,
-    ThinkingDelta(#[allow(dead_code)] String),
+    ThinkingDelta(String),
     ThinkingDone,
     TextDelta(String),
     ToolRequested(ToolCall),

@@ -127,23 +127,15 @@ impl ThinkParser {
 pub struct OllamaClient {
     base_url: String,
     model: String,
-    tool_model: Option<String>,
     thinking: bool,
     http: reqwest::Client,
 }
 
 impl OllamaClient {
-    pub fn new(
-        base_url: &str,
-        model: &str,
-        tool_model: Option<String>,
-        thinking: bool,
-        http: reqwest::Client,
-    ) -> Self {
+    pub fn new(base_url: &str, model: &str, thinking: bool, http: reqwest::Client) -> Self {
         OllamaClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             model: model.to_string(),
-            tool_model,
             thinking,
             http,
         }
@@ -210,16 +202,10 @@ impl OllamaClient {
         history: &[Message],
         tools: &[ToolDefinition],
         tx: mpsc::Sender<AgentEvent>,
-        use_tool_model: bool,
     ) -> anyhow::Result<TurnOutcome> {
         let url = format!("{}/api/chat", self.base_url);
-        let active_model = if use_tool_model {
-            self.tool_model.as_deref().unwrap_or(&self.model)
-        } else {
-            &self.model
-        };
         let body = json!({
-            "model": active_model,
+            "model": &self.model,
             "messages": self.messages_to_json(history),
             "tools": Self::tools_to_json(tools),
             "stream": true,
@@ -231,7 +217,7 @@ impl OllamaClient {
         });
 
         debug!(
-            model = active_model,
+            model = %self.model,
             messages = history.len(),
             tools = tools.len(),
             "ollama request start"
@@ -361,6 +347,16 @@ impl OllamaClient {
 }
 
 fn parse_context_window(resp: &serde_json::Value) -> Option<u64> {
+    if let Some(params) = resp["parameters"].as_str() {
+        for line in params.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() == 2 && parts[0] == "num_ctx" {
+                if let Ok(n) = parts[1].parse::<u64>() {
+                    return Some(n);
+                }
+            }
+        }
+    }
     let mi = &resp["model_info"];
     if let Some(arch) = mi["general.architecture"].as_str() {
         let key = format!("{arch}.context_length");
@@ -373,16 +369,6 @@ fn parse_context_window(resp: &serde_json::Value) -> Option<u64> {
     }
     if let Some(n) = mi["general.context_length"].as_u64() {
         return Some(n);
-    }
-    if let Some(params) = resp["parameters"].as_str() {
-        for line in params.lines() {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() == 2 && parts[0] == "num_ctx" {
-                if let Ok(n) = parts[1].parse::<u64>() {
-                    return Some(n);
-                }
-            }
-        }
     }
     None
 }
@@ -453,7 +439,7 @@ mod tests {
     #[test]
     fn messages_to_json_system_gets_think_prefix() {
         let http = reqwest::Client::new();
-        let client = OllamaClient::new("http://localhost:11434", "gemma4:26b", None, true, http);
+        let client = OllamaClient::new("http://localhost:11434", "gemma4:26b", true, http);
         let history = vec![Message::new(Role::System, "You are helpful.".into())];
         let json = client.messages_to_json(&history);
         let content = json[0]["content"].as_str().unwrap();
@@ -463,11 +449,30 @@ mod tests {
     #[test]
     fn messages_to_json_no_think_prefix_when_disabled() {
         let http = reqwest::Client::new();
-        let client = OllamaClient::new("http://localhost:11434", "gemma4:26b", None, false, http);
+        let client = OllamaClient::new("http://localhost:11434", "gemma4:26b", false, http);
         let history = vec![Message::new(Role::System, "You are helpful.".into())];
         let json = client.messages_to_json(&history);
         let content = json[0]["content"].as_str().unwrap();
         assert!(!content.contains("<|think|>"));
+    }
+
+    #[test]
+    fn messages_to_json_includes_images() {
+        let http = reqwest::Client::new();
+        let client = OllamaClient::new("http://localhost:11434", "gemma4:26b", false, http);
+        let mut msg = Message::new(Role::User, "describe this".into());
+        msg.images = vec!["base64data".into()];
+        let json = client.messages_to_json(&[msg]);
+        assert_eq!(json[0]["images"][0], "base64data");
+    }
+
+    #[test]
+    fn messages_to_json_no_images_field_when_empty() {
+        let http = reqwest::Client::new();
+        let client = OllamaClient::new("http://localhost:11434", "gemma4:26b", false, http);
+        let msg = Message::new(Role::User, "hello".into());
+        let json = client.messages_to_json(&[msg]);
+        assert!(json[0].get("images").is_none());
     }
 
     #[test]
@@ -506,12 +511,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_context_window_model_info_takes_precedence() {
+    fn parse_context_window_num_ctx_takes_precedence() {
         let resp = json!({
             "model_info": { "llama.context_length": 32768 },
             "parameters": "num_ctx 8192"
         });
-        assert_eq!(parse_context_window(&resp), Some(32768));
+        assert_eq!(parse_context_window(&resp), Some(8192));
     }
 
     #[test]
