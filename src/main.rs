@@ -43,8 +43,6 @@ struct Cli {
     model: String,
     #[arg(long, default_value = "http://localhost:11434")]
     ollama_url: String,
-    #[arg(long)]
-    no_thinking: bool,
 }
 
 struct TerminalGuard;
@@ -84,12 +82,11 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let thinking = !cli.no_thinking;
     let working_dir = std::env::current_dir().context("failed to get current directory")?;
     let http = reqwest::Client::new();
 
     // Verify Ollama is reachable
-    let ollama = OllamaClient::new(&cli.ollama_url, &cli.model, thinking, http.clone());
+    let ollama = OllamaClient::new(&cli.ollama_url, &cli.model, http.clone());
     let models = ollama
         .list_models()
         .await
@@ -101,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
             models.join(", ")
         );
     }
-    tracing::info!(model = %cli.model, ollama_url = %cli.ollama_url, thinking, "agent starting");
+    tracing::info!(model = %cli.model, ollama_url = %cli.ollama_url, "agent starting");
 
     // Load MCP config
     let mcp_registry = match config::load_config(&working_dir).map_err(anyhow::Error::from)? {

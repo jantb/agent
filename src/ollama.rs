@@ -48,101 +48,23 @@ impl LineParser {
     }
 }
 
-struct ThinkParser {
-    in_think: bool,
-    started: bool,
-    buf: String,
-}
-
-impl ThinkParser {
-    fn new() -> Self {
-        Self {
-            in_think: false,
-            started: false,
-            buf: String::new(),
-        }
-    }
-
-    async fn process(&mut self, delta: &str, tx: &mpsc::Sender<AgentEvent>) -> String {
-        let mut visible = String::new();
-        let mut remaining = delta;
-
-        loop {
-            if self.in_think {
-                if let Some(end_pos) = remaining.find("</think>") {
-                    let think_content = &remaining[..end_pos];
-                    if !think_content.is_empty() {
-                        if let Err(e) = tx
-                            .send(AgentEvent::ThinkingDelta(think_content.to_string()))
-                            .await
-                        {
-                            tracing::error!("failed to send ThinkingDelta: {e}");
-                        }
-                    }
-                    self.in_think = false;
-                    if let Err(e) = tx.send(AgentEvent::ThinkingDone).await {
-                        tracing::error!("failed to send ThinkingDone: {e}");
-                    }
-                    self.started = false;
-                    remaining = &remaining[end_pos + "</think>".len()..];
-                } else {
-                    if !remaining.is_empty() {
-                        if let Err(e) = tx
-                            .send(AgentEvent::ThinkingDelta(remaining.to_string()))
-                            .await
-                        {
-                            tracing::error!("failed to send ThinkingDelta: {e}");
-                        }
-                    }
-                    break;
-                }
-            } else if let Some(start_pos) = remaining.find("<think>") {
-                visible.push_str(&remaining[..start_pos]);
-                self.in_think = true;
-                if !self.started {
-                    self.started = true;
-                    if let Err(e) = tx.send(AgentEvent::ThinkingStarted).await {
-                        tracing::error!("failed to send ThinkingStarted: {e}");
-                    }
-                }
-                self.buf.clear();
-                remaining = &remaining[start_pos + "<think>".len()..];
-            } else {
-                visible.push_str(remaining);
-                break;
-            }
-        }
-        visible
-    }
-
-    async fn finish(&self, tx: &mpsc::Sender<AgentEvent>) {
-        if self.started {
-            if let Err(e) = tx.send(AgentEvent::ThinkingDone).await {
-                tracing::error!("failed to send ThinkingDone (finish): {e}");
-            }
-        }
-    }
-}
-
 pub struct OllamaClient {
     base_url: String,
     model: String,
-    thinking: bool,
     http: reqwest::Client,
 }
 
 impl OllamaClient {
-    pub fn new(base_url: &str, model: &str, thinking: bool, http: reqwest::Client) -> Self {
+    pub fn new(base_url: &str, model: &str, http: reqwest::Client) -> Self {
         OllamaClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             model: model.to_string(),
-            thinking,
             http,
         }
     }
 
     fn messages_to_json(&self, history: &[Message]) -> serde_json::Value {
-        let mut msgs: Vec<serde_json::Value> = history
+        let msgs: Vec<serde_json::Value> = history
             .iter()
             .map(|m| {
                 let role = serde_json::to_value(&m.role).unwrap_or(json!("user"));
@@ -168,15 +90,6 @@ impl OllamaClient {
             })
             .collect();
 
-        // Inject thinking prefix into system message if enabled
-        if self.thinking {
-            if let Some(first) = msgs.first_mut() {
-                if first["role"] == "system" {
-                    let content = first["content"].as_str().unwrap_or("").to_string();
-                    first["content"] = json!(format!("<|think|>\n{content}"));
-                }
-            }
-        }
         json!(msgs)
     }
 
@@ -209,6 +122,7 @@ impl OllamaClient {
             "messages": self.messages_to_json(history),
             "tools": Self::tools_to_json(tools),
             "stream": true,
+            "think": true,
             "options": {
                 "temperature": 1.0,
                 "top_p": 0.95,
@@ -234,7 +148,7 @@ impl OllamaClient {
 
         let mut stream = resp.bytes_stream();
         let mut lines = LineParser::new();
-        let mut think = ThinkParser::new();
+        let mut in_thinking = false;
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let mut full_text = String::new();
         let mut done_flag = false;
@@ -255,20 +169,44 @@ impl OllamaClient {
                     }
                 }
 
+                if let Some(think_delta) = val["message"]["thinking"].as_str() {
+                    if !think_delta.is_empty() {
+                        if !in_thinking {
+                            in_thinking = true;
+                            if let Err(e) = tx.send(AgentEvent::ThinkingStarted).await {
+                                tracing::error!("failed to send ThinkingStarted: {e}");
+                            }
+                        }
+                        if let Err(e) = tx
+                            .send(AgentEvent::ThinkingDelta(think_delta.to_string()))
+                            .await
+                        {
+                            tracing::error!("failed to send ThinkingDelta: {e}");
+                        }
+                    }
+                }
+
                 if let Some(delta) = val["message"]["content"].as_str() {
                     if !delta.is_empty() {
-                        let remaining = think.process(delta, &tx).await;
-                        if !remaining.is_empty() {
-                            full_text.push_str(&remaining);
-                            if let Err(e) = tx.send(AgentEvent::TextDelta(remaining)).await {
-                                tracing::error!("failed to send TextDelta: {e}");
+                        if in_thinking {
+                            in_thinking = false;
+                            if let Err(e) = tx.send(AgentEvent::ThinkingDone).await {
+                                tracing::error!("failed to send ThinkingDone: {e}");
                             }
+                        }
+                        full_text.push_str(delta);
+                        if let Err(e) = tx.send(AgentEvent::TextDelta(delta.to_string())).await {
+                            tracing::error!("failed to send TextDelta: {e}");
                         }
                     }
                 }
 
                 if val["done"].as_bool() == Some(true) {
-                    think.finish(&tx).await;
+                    if in_thinking {
+                        if let Err(e) = tx.send(AgentEvent::ThinkingDone).await {
+                            tracing::error!("failed to send ThinkingDone: {e}");
+                        }
+                    }
                     let eval_count = val["eval_count"].as_u64().unwrap_or(0);
                     let prompt_eval_count = val["prompt_eval_count"].as_u64().unwrap_or(0);
                     if eval_count > 0 || prompt_eval_count > 0 {
@@ -379,79 +317,11 @@ fn parse_context_window(resp: &serde_json::Value) -> Option<u64> {
 mod tests {
     use super::*;
     use crate::types::Role;
-    use tokio::sync::mpsc;
-
-    async fn collect_events(delta: &str) -> (Vec<AgentEvent>, String) {
-        let (tx, mut rx) = mpsc::channel(32);
-        let mut parser = ThinkParser::new();
-        let visible = parser.process(delta, &tx).await;
-        drop(tx);
-        let mut events = Vec::new();
-        while let Some(e) = rx.recv().await {
-            events.push(e);
-        }
-        (events, visible)
-    }
-
-    #[tokio::test]
-    async fn plain_text_no_think_tags() {
-        let (events, visible) = collect_events("hello world").await;
-        assert!(events.is_empty());
-        assert_eq!(visible, "hello world");
-    }
-
-    #[tokio::test]
-    async fn think_tags_emit_events() {
-        let (events, visible) = collect_events("<think>internal</think>response").await;
-        assert_eq!(visible, "response");
-        let has_started = events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::ThinkingStarted));
-        let has_delta = events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::ThinkingDelta(d) if d.contains("internal")));
-        let has_done = events.iter().any(|e| matches!(e, AgentEvent::ThinkingDone));
-        assert!(has_started, "should have ThinkingStarted");
-        assert!(has_delta, "should have ThinkingDelta with 'internal'");
-        assert!(has_done, "should have ThinkingDone");
-    }
-
-    #[tokio::test]
-    async fn think_before_text() {
-        let (_, visible) = collect_events("<think>private</think>public").await;
-        assert_eq!(visible, "public");
-    }
-
-    #[tokio::test]
-    async fn text_before_and_after_think() {
-        let (_, visible) = collect_events("pre<think>mid</think>post").await;
-        assert_eq!(visible, "prepost");
-    }
-
-    #[tokio::test]
-    async fn no_end_tag_stays_in_thinking_mode() {
-        let (events, visible) = collect_events("<think>still thinking").await;
-        assert!(visible.is_empty());
-        let has_delta = events
-            .iter()
-            .any(|e| matches!(e, AgentEvent::ThinkingDelta(d) if d.contains("still thinking")));
-        assert!(has_delta);
-    }
 
     #[test]
-    fn messages_to_json_system_gets_think_prefix() {
+    fn messages_to_json_no_think_prefix() {
         let http = reqwest::Client::new();
-        let client = OllamaClient::new("http://localhost:11434", "gemma4:26b", true, http);
-        let history = vec![Message::new(Role::System, "You are helpful.".into())];
-        let json = client.messages_to_json(&history);
-        let content = json[0]["content"].as_str().unwrap();
-        assert!(content.starts_with("<|think|>"));
-    }
-
-    #[test]
-    fn messages_to_json_no_think_prefix_when_disabled() {
-        let http = reqwest::Client::new();
-        let client = OllamaClient::new("http://localhost:11434", "gemma4:26b", false, http);
+        let client = OllamaClient::new("http://localhost:11434", "gemma4:26b", http);
         let history = vec![Message::new(Role::System, "You are helpful.".into())];
         let json = client.messages_to_json(&history);
         let content = json[0]["content"].as_str().unwrap();
@@ -461,7 +331,7 @@ mod tests {
     #[test]
     fn messages_to_json_includes_images() {
         let http = reqwest::Client::new();
-        let client = OllamaClient::new("http://localhost:11434", "gemma4:26b", false, http);
+        let client = OllamaClient::new("http://localhost:11434", "gemma4:26b", http);
         let mut msg = Message::new(Role::User, "describe this".into());
         msg.images = vec!["base64data".into()];
         let json = client.messages_to_json(&[msg]);
@@ -471,7 +341,7 @@ mod tests {
     #[test]
     fn messages_to_json_no_images_field_when_empty() {
         let http = reqwest::Client::new();
-        let client = OllamaClient::new("http://localhost:11434", "gemma4:26b", false, http);
+        let client = OllamaClient::new("http://localhost:11434", "gemma4:26b", http);
         let msg = Message::new(Role::User, "hello".into());
         let json = client.messages_to_json(&[msg]);
         assert!(json[0].get("images").is_none());
