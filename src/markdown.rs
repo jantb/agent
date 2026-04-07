@@ -1,3 +1,4 @@
+use crate::highlight::highlight_code;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -16,6 +17,8 @@ struct RenderState {
     list_depth: u32,
     ordered_counters: Vec<u64>,
     in_link: bool,
+    code_block_lang: Option<String>,
+    code_block_buffer: String,
 }
 
 impl RenderState {
@@ -32,6 +35,8 @@ impl RenderState {
             list_depth: 0,
             ordered_counters: Vec::new(),
             in_link: false,
+            code_block_lang: None,
+            code_block_buffer: String::new(),
         }
     }
 
@@ -155,9 +160,11 @@ pub fn markdown_to_lines(text: &str, indent: &str) -> Vec<Line<'static>> {
 
             Event::Start(Tag::CodeBlock(kind)) => {
                 state.in_code_block = true;
+                state.code_block_buffer.clear();
                 if let CodeBlockKind::Fenced(lang) = kind {
                     let lang = lang.trim().to_owned();
                     if !lang.is_empty() {
+                        state.code_block_lang = Some(lang.clone());
                         let label = format!("  {lang}");
                         let mut spans: Vec<Span<'static>> = Vec::new();
                         if !state.indent.is_empty() {
@@ -170,12 +177,31 @@ pub fn markdown_to_lines(text: &str, indent: &str) -> Vec<Line<'static>> {
                                 .add_modifier(Modifier::ITALIC),
                         ));
                         state.lines.push(Line::from(spans));
+                    } else {
+                        state.code_block_lang = None;
                     }
+                } else {
+                    state.code_block_lang = None;
                 }
             }
             Event::End(TagEnd::CodeBlock) => {
-                if !state.current_spans.is_empty() {
-                    state.flush_line();
+                let code = std::mem::take(&mut state.code_block_buffer);
+                if let Some(ref lang) = state.code_block_lang.take() {
+                    if let Some(highlighted) = highlight_code(&code, lang, &state.indent) {
+                        state.lines.extend(highlighted);
+                    } else {
+                        // fallback: yellow
+                        state.push_text(&code);
+                        if !state.current_spans.is_empty() {
+                            state.flush_line();
+                        }
+                    }
+                } else {
+                    // unfenced: yellow
+                    state.push_text(&code);
+                    if !state.current_spans.is_empty() {
+                        state.flush_line();
+                    }
                 }
                 state.in_code_block = false;
                 state.blank_line();
@@ -333,7 +359,11 @@ pub fn markdown_to_lines(text: &str, indent: &str) -> Vec<Line<'static>> {
 
             Event::Text(text) => {
                 let s = text.to_string();
-                state.push_text(&s);
+                if state.in_code_block {
+                    state.code_block_buffer.push_str(&s);
+                } else {
+                    state.push_text(&s);
+                }
             }
 
             Event::SoftBreak => {
@@ -366,6 +396,12 @@ pub fn markdown_to_lines(text: &str, indent: &str) -> Vec<Line<'static>> {
             }
         }
         let _ = (in_table_header, in_table_row); // suppress unused warnings
+    }
+
+    // Streaming fallback: code block not yet closed
+    if state.in_code_block && !state.code_block_buffer.is_empty() {
+        let buf = state.code_block_buffer.clone();
+        state.push_text(&buf);
     }
 
     if !state.current_spans.is_empty() {
@@ -477,6 +513,25 @@ mod tests {
             .find(|s| s.content.contains("code"))
             .expect("code span");
         assert_eq!(code.style.fg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn code_block_with_language_gets_rgb_colors() {
+        let lines = markdown_to_lines("```rust\nlet x = 1;\n```", "");
+        let spans = all_spans(&lines);
+        // Should have at least one Rgb-colored span (not all yellow)
+        assert!(spans
+            .iter()
+            .any(|s| matches!(s.style.fg, Some(Color::Rgb(_, _, _)))));
+    }
+
+    #[test]
+    fn code_block_unknown_lang_falls_back_to_yellow() {
+        let lines = markdown_to_lines("```xyzlang\nfoo bar\n```", "");
+        let spans = all_spans(&lines);
+        let code_span = spans.iter().find(|s| s.content.contains("foo bar"));
+        assert!(code_span.is_some());
+        assert_eq!(code_span.unwrap().style.fg, Some(Color::Yellow));
     }
 
     #[test]

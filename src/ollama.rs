@@ -327,6 +327,7 @@ impl OllamaClient {
         Ok(models)
     }
 
+    #[allow(dead_code)]
     pub async fn fetch_context_window(&self) -> anyhow::Result<Option<u64>> {
         let url = format!("{}/api/show", self.base_url);
         let body = json!({ "model": self.model });
@@ -346,6 +347,7 @@ impl OllamaClient {
     }
 }
 
+#[allow(dead_code)]
 fn parse_context_window(resp: &serde_json::Value) -> Option<u64> {
     if let Some(params) = resp["parameters"].as_str() {
         for line in params.lines() {

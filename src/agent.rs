@@ -260,3 +260,22 @@ impl AgentTask {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_system_prompt_empty_memory() {
+        let prompt = system_prompt("");
+        assert!(prompt.contains("You are a helpful local AI agent"));
+        assert!(!prompt.contains("Stored memories:"));
+    }
+
+    #[test]
+    fn test_system_prompt_with_memory() {
+        let prompt = system_prompt("Memory 1: hello");
+        assert!(prompt.contains("Stored memories:"));
+        assert!(prompt.contains("Memory 1: hello"));
+    }
+}

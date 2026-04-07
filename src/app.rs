@@ -2,29 +2,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::input::InputState;
-use crate::types::{Role, ToolCall, ToolResult};
-
-#[derive(Debug, Clone)]
-pub struct ChatMessage {
-    pub role: Role,
-    pub content: String,
-    pub kind: MessageKind,
-}
-
-#[derive(Debug, Clone)]
-pub enum MessageKind {
-    Text,
-    Thinking,
-    ToolCall {
-        call_id: String,
-        name: String,
-        arguments: String,
-    },
-    ToolResult {
-        name: String,
-        is_error: bool,
-    },
-}
+use crate::types::{ChatMessage, MessageKind, Role, ToolCall, ToolResult};
 
 pub struct App {
     pub messages: Vec<ChatMessage>,

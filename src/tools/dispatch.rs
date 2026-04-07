@@ -526,4 +526,68 @@ mod tests {
         assert!(result.output.contains("+changed"));
         assert!(result.output.contains(" line1"));
     }
+
+    #[tokio::test]
+    async fn remember_creates_memory() {
+        let dir = setup_dir();
+        let call = make_call(
+            "remember",
+            json!({"name": "test tip", "content": "tokio is great", "description": "async tip", "tags": ["rust"]}),
+        );
+        let result = execute_built_in(&call, dir.path()).await;
+        assert!(!result.is_error, "{}", result.output);
+        assert!(result.output.contains("test tip"));
+        let mem_path = dir.path().join(".agent").join("memory").join("test-tip.md");
+        assert!(mem_path.exists());
+    }
+
+    #[tokio::test]
+    async fn recall_finds_created_memory() {
+        let dir = setup_dir();
+        let remember = make_call(
+            "remember",
+            json!({"name": "recall test", "content": "goroutines are like green threads", "description": "go concurrency"}),
+        );
+        execute_built_in(&remember, dir.path()).await;
+        let call = make_call("recall", json!({"keyword": "goroutines"}));
+        let result = execute_built_in(&call, dir.path()).await;
+        assert!(!result.is_error, "{}", result.output);
+        assert!(result.output.contains("recall test"));
+    }
+
+    #[tokio::test]
+    async fn forget_removes_memory() {
+        let dir = setup_dir();
+        let remember = make_call(
+            "remember",
+            json!({"name": "ephemeral", "content": "delete me", "description": "temp"}),
+        );
+        execute_built_in(&remember, dir.path()).await;
+        let call = make_call("forget", json!({"name": "ephemeral"}));
+        let result = execute_built_in(&call, dir.path()).await;
+        assert!(!result.is_error, "{}", result.output);
+        let mem_path = dir
+            .path()
+            .join(".agent")
+            .join("memory")
+            .join("ephemeral.md");
+        assert!(!mem_path.exists());
+    }
+
+    #[tokio::test]
+    async fn list_memories_shows_stored_memories() {
+        let dir = setup_dir();
+        for (name, desc) in [("Alpha note", "first"), ("Beta note", "second")] {
+            let call = make_call(
+                "remember",
+                json!({"name": name, "content": "body", "description": desc}),
+            );
+            execute_built_in(&call, dir.path()).await;
+        }
+        let call = make_call("list_memories", json!({}));
+        let result = execute_built_in(&call, dir.path()).await;
+        assert!(!result.is_error, "{}", result.output);
+        assert!(result.output.contains("Alpha note"));
+        assert!(result.output.contains("Beta note"));
+    }
 }

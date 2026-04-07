@@ -1,6 +1,7 @@
 mod agent;
 mod app;
 mod config;
+mod highlight;
 mod input;
 mod keys;
 mod markdown;
@@ -33,7 +34,7 @@ use mcp::McpRegistry;
 use ollama::OllamaClient;
 use session::{ensure_gitignore, Session};
 use tools::built_in_tool_definitions;
-use types::AgentEvent;
+use types::{AgentEvent, ChatMessage, MessageKind};
 
 #[derive(Parser)]
 #[command(name = "agent", about = "Local AI agent TUI powered by Ollama")]
@@ -131,25 +132,16 @@ async fn main() -> anyhow::Result<()> {
 
     ensure_gitignore(&working_dir)?;
 
-    // Fetch context window size
-    let ctx_window = match ollama.fetch_context_window().await {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!("failed to fetch context window: {e}");
-            None
-        }
-    };
-
     // Build App
     let mut app = App::new(cli.model.clone(), working_dir.clone());
-    app.context_window_size = ctx_window;
+    app.context_window_size = Some(131_072);
     app.mcp_connected = mcp_registry.connected_servers().await;
     app.mcp_failed = mcp_registry.failed_servers().await;
     app.resumed_session = resumed;
 
     // Restore messages from session into app display
     for sm in &session.messages {
-        let chat_msg: app::ChatMessage = sm.clone().into();
+        let chat_msg: ChatMessage = sm.clone().into();
         app.messages.push(chat_msg);
     }
 
@@ -263,10 +255,10 @@ async fn apply_command(cmd: keys::UiCommand, app: &mut App, action_tx: &mpsc::Se
                         tracing::error!("failed to send ClearHistory action: {e}");
                     }
                 } else if text.trim() == "/help" {
-                    app.messages.push(app::ChatMessage {
+                    app.messages.push(ChatMessage {
                         role: types::Role::Assistant,
                         content: App::help_text().to_string(),
-                        kind: app::MessageKind::Text,
+                        kind: MessageKind::Text,
                     });
                 } else {
                     let images = app.take_pending_images();

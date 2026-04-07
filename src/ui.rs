@@ -6,9 +6,9 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, MessageKind};
+use crate::app::App;
 use crate::markdown::markdown_to_lines;
-use crate::types::Role;
+use crate::types::{MessageKind, Role};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let input_height = if app.streaming {
@@ -112,13 +112,43 @@ fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 )));
             }
             MessageKind::Thinking => {
-                for content_line in msg.content.lines() {
-                    lines.push(Line::from(Span::styled(
-                        format!("  {content_line}"),
+                let content_lines: Vec<&str> = msg.content.lines().collect();
+                let total = content_lines.len();
+                lines.push(Line::from(vec![
+                    Span::styled("  \u{2502} ", Style::default().fg(Color::Indexed(243))),
+                    Span::styled(
+                        "thinking",
                         Style::default()
-                            .fg(Color::DarkGray)
-                            .add_modifier(Modifier::ITALIC),
-                    )));
+                            .fg(Color::Indexed(243))
+                            .add_modifier(Modifier::ITALIC)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+                let max_visible = 3;
+                let show = if total <= max_visible + 1 {
+                    total
+                } else {
+                    max_visible
+                };
+                for line in &content_lines[..show] {
+                    lines.push(Line::from(vec![
+                        Span::styled("  \u{2502} ", Style::default().fg(Color::Indexed(243))),
+                        Span::styled(
+                            line.to_string(),
+                            Style::default()
+                                .fg(Color::Indexed(245))
+                                .add_modifier(Modifier::ITALIC),
+                        ),
+                    ]));
+                }
+                if total > show {
+                    lines.push(Line::from(vec![
+                        Span::styled("  \u{2502} ", Style::default().fg(Color::Indexed(243))),
+                        Span::styled(
+                            format!("[{} more lines]", total - show),
+                            Style::default().fg(Color::Indexed(240)),
+                        ),
+                    ]));
                 }
             }
             MessageKind::ToolResult { name, is_error } => {
@@ -158,23 +188,29 @@ fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     }
 
     if app.thinking {
+        let spinner = app.spinner_char();
+        lines.push(Line::from(vec![
+            Span::styled("  \u{2502} ", Style::default().fg(Color::Indexed(243))),
+            Span::styled(
+                format!("{spinner} thinking"),
+                Style::default()
+                    .fg(Color::Indexed(243))
+                    .add_modifier(Modifier::ITALIC)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
         if !app.current_thinking_text.is_empty() {
             for think_line in app.current_thinking_text.lines() {
-                lines.push(Line::from(Span::styled(
-                    format!("  {think_line}"),
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::ITALIC),
-                )));
+                lines.push(Line::from(vec![
+                    Span::styled("  \u{2502} ", Style::default().fg(Color::Indexed(243))),
+                    Span::styled(
+                        think_line.to_string(),
+                        Style::default()
+                            .fg(Color::Indexed(245))
+                            .add_modifier(Modifier::ITALIC),
+                    ),
+                ]));
             }
-        } else {
-            let spinner = app.spinner_char();
-            lines.push(Line::from(Span::styled(
-                format!("  {spinner} Thinking..."),
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
-            )));
         }
     }
 

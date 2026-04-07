@@ -86,3 +86,69 @@ pub enum TurnOutcome {
     Text(String),
     ToolCalls(String, Vec<ToolCall>),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn message_new_sets_role_and_content() {
+        let msg = Message::new(Role::User, "hello".into());
+        assert_eq!(msg.role, Role::User);
+        assert_eq!(msg.content, "hello");
+        assert!(msg.images.is_empty());
+        assert!(msg.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn message_new_assistant_role() {
+        let msg = Message::new(Role::Assistant, "reply".into());
+        assert_eq!(msg.role, Role::Assistant);
+        assert_eq!(msg.content, "reply");
+    }
+
+    #[test]
+    fn message_tool_request_sets_role_and_calls() {
+        let calls = vec![ToolCall {
+            id: "1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "foo.txt"}),
+        }];
+        let msg = Message::tool_request("calling tool".into(), calls);
+        assert_eq!(msg.role, Role::Assistant);
+        assert_eq!(msg.content, "calling tool");
+        assert_eq!(msg.tool_calls.len(), 1);
+        assert_eq!(msg.tool_calls[0].name, "read_file");
+        assert!(msg.images.is_empty());
+    }
+
+    #[test]
+    fn message_tool_request_empty_calls() {
+        let msg = Message::tool_request(String::new(), vec![]);
+        assert_eq!(msg.role, Role::Assistant);
+        assert!(msg.tool_calls.is_empty());
+        assert!(msg.content.is_empty());
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatMessage {
+    pub role: Role,
+    pub content: String,
+    pub kind: MessageKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum MessageKind {
+    Text,
+    Thinking,
+    ToolCall {
+        call_id: String,
+        name: String,
+        arguments: String,
+    },
+    ToolResult {
+        name: String,
+        is_error: bool,
+    },
+}

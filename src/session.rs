@@ -7,10 +7,7 @@ use anyhow::Context;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    app::{ChatMessage, MessageKind},
-    types::{Message, Role, ToolCall},
-};
+use crate::types::{ChatMessage, Message, MessageKind, Role, ToolCall};
 
 const SESSION_DIR: &str = ".agent";
 const SESSION_FILE: &str = "session.json";
