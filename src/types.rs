@@ -27,15 +27,6 @@ impl Message {
         }
     }
 
-    pub fn with_images(role: Role, content: String, images: Vec<String>) -> Self {
-        Self {
-            role,
-            content,
-            images,
-            tool_calls: vec![],
-        }
-    }
-
     pub fn tool_request(content: String, calls: Vec<ToolCall>) -> Self {
         Self {
             role: Role::Assistant,

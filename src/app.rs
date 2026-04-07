@@ -48,6 +48,8 @@ pub struct App {
     pub last_eval_count: Option<u64>,
     pub last_prompt_eval_count: Option<u64>,
     pub context_window_size: Option<u64>,
+    pub total_tokens_up: u64,
+    pub total_tokens_down: u64,
     pub pending_images: Vec<String>, // base64-encoded images to attach to next message
 }
 
@@ -75,6 +77,8 @@ impl App {
             last_eval_count: None,
             last_prompt_eval_count: None,
             context_window_size: None,
+            total_tokens_up: 0,
+            total_tokens_down: 0,
             pending_images: Vec::new(),
         }
     }
@@ -147,6 +151,8 @@ impl App {
     pub fn update_turn_stats(&mut self, eval_count: u64, prompt_eval_count: u64) {
         self.last_eval_count = Some(eval_count);
         self.last_prompt_eval_count = Some(prompt_eval_count);
+        self.total_tokens_down += eval_count;
+        self.total_tokens_up += prompt_eval_count;
     }
 
     pub fn elapsed_secs(&self) -> Option<f64> {
@@ -708,5 +714,23 @@ mod tests {
         assert_eq!(app.messages[1].content, "a1");
         assert_eq!(app.messages[2].content, "q2");
         assert_eq!(app.messages[3].content, "a2");
+    }
+
+    #[test]
+    fn update_turn_stats_accumulates_across_turns() {
+        let mut app = make_app();
+        app.update_turn_stats(100, 200);
+        app.update_turn_stats(50, 75);
+        assert_eq!(app.total_tokens_down, 150);
+        assert_eq!(app.total_tokens_up, 275);
+    }
+
+    #[test]
+    fn clear_messages_does_not_reset_cumulative_tokens() {
+        let mut app = make_app();
+        app.update_turn_stats(100, 200);
+        app.clear_messages();
+        assert_eq!(app.total_tokens_down, 100);
+        assert_eq!(app.total_tokens_up, 200);
     }
 }

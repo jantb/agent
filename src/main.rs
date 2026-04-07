@@ -25,13 +25,15 @@ use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
 
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
 use agent::{system_prompt, AgentTask, AgentTaskConfig, UserAction};
 use app::App;
 use mcp::McpRegistry;
 use ollama::OllamaClient;
-use session::{ensure_gitignore, Session, SessionMessage};
+use session::{ensure_gitignore, Session};
 use tools::built_in_tool_definitions;
-use types::{AgentEvent, Message, Role};
+use types::AgentEvent;
 
 #[derive(Parser)]
 #[command(name = "agent", about = "Local AI agent TUI powered by Ollama")]
@@ -63,6 +65,26 @@ impl Drop for TerminalGuard {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    // Logging
+    let log_dir = std::env::current_dir().unwrap_or_default().join(".agent");
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        eprintln!("failed to create log dir: {e}");
+    }
+    let file_appender = tracing_appender::rolling::never(&log_dir, "agent.log");
+    let (non_blocking, _log_guard) = tracing_appender::non_blocking(file_appender);
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug")),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(non_blocking)
+                .with_ansi(false),
+        )
+        .init();
+
     let thinking = !cli.no_thinking;
     let working_dir = std::env::current_dir().context("failed to get current directory")?;
     let http = reqwest::Client::new();
@@ -86,57 +108,51 @@ async fn main() -> anyhow::Result<()> {
             models.join(", ")
         );
     }
+    tracing::info!(model = %cli.model, ollama_url = %cli.ollama_url, thinking, "agent starting");
 
     // Load MCP config
     let mcp_registry = match config::load_config_from_cwd()? {
         Some(cfg) => McpRegistry::from_config(&cfg, &http).await,
         None => McpRegistry::empty(),
     };
+    tracing::info!(connected = ?mcp_registry.connected_servers().await, "MCP registry ready");
 
     // Collect all tools
     let mut all_tools = built_in_tool_definitions();
-    for t in mcp_registry.all_tools() {
-        all_tools.push(t.clone());
+    for t in mcp_registry.all_tools().await {
+        all_tools.push(t);
     }
 
     // Load or create session
     let memory_index = memory::build_memory_index(&working_dir);
-    let (session, history, resumed) = match Session::load(&working_dir)? {
+    let sys_prompt = system_prompt(&memory_index);
+    let (session, resumed) = match Session::load(&working_dir)? {
         Some(s) => {
             let date = s.updated_at.format("%Y-%m-%d %H:%M").to_string();
-            let mut history = vec![Message::new(Role::System, system_prompt(&memory_index))];
-            for sm in &s.messages {
-                if let SessionMessage::Text { role, content } = sm {
-                    history.push(Message::new(role.clone(), content.clone()));
-                }
-            }
-            (s, history, Some(date))
+            (s, Some(date))
         }
         None => {
             let s = Session::new(&cli.model, &working_dir);
-            let history = vec![Message::new(Role::System, system_prompt(&memory_index))];
-            (s, history, None)
+            (s, None)
         }
     };
 
     ensure_gitignore(&working_dir)?;
 
     // Fetch context window size
-    let ctx_window = ollama.fetch_context_window().await.ok().flatten();
+    let ctx_window = match ollama.fetch_context_window().await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("failed to fetch context window: {e}");
+            None
+        }
+    };
 
     // Build App
     let mut app = App::new(cli.model.clone(), working_dir.clone());
     app.context_window_size = ctx_window;
-    app.mcp_connected = mcp_registry
-        .connected_servers()
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    app.mcp_failed = mcp_registry
-        .failed_servers()
-        .iter()
-        .map(|(n, r)| (n.to_string(), r.to_string()))
-        .collect();
+    app.mcp_connected = mcp_registry.connected_servers().await;
+    app.mcp_failed = mcp_registry.failed_servers().await;
     app.resumed_session = resumed;
 
     // Restore messages from session into app display
@@ -169,8 +185,8 @@ async fn main() -> anyhow::Result<()> {
         tools: all_tools,
         event_tx,
         action_rx,
-        history,
         session,
+        system_prompt: sys_prompt,
     });
     tokio::spawn(async move { agent_task.run().await });
 
@@ -236,18 +252,24 @@ async fn apply_command(cmd: keys::UiCommand, app: &mut App, action_tx: &mpsc::Se
     use keys::UiCommand;
     match cmd {
         UiCommand::Quit => {
-            let _ = action_tx.send(UserAction::Quit).await;
+            if let Err(e) = action_tx.send(UserAction::Quit).await {
+                tracing::error!("failed to send Quit action: {e}");
+            }
             app.running = false;
         }
         UiCommand::Cancel => {
-            let _ = action_tx.send(UserAction::Cancel).await;
+            if let Err(e) = action_tx.send(UserAction::Cancel).await {
+                tracing::error!("failed to send Cancel action: {e}");
+            }
         }
         UiCommand::Submit => {
             if !app.input.is_empty() {
                 let text = app.input.take();
                 if text.trim() == "/clear" || text.trim() == "/new" {
                     app.clear_messages();
-                    let _ = action_tx.send(UserAction::ClearHistory).await;
+                    if let Err(e) = action_tx.send(UserAction::ClearHistory).await {
+                        tracing::error!("failed to send ClearHistory action: {e}");
+                    }
                 } else if text.trim() == "/help" {
                     app.messages.push(app::ChatMessage {
                         role: types::Role::Assistant,
@@ -258,7 +280,9 @@ async fn apply_command(cmd: keys::UiCommand, app: &mut App, action_tx: &mpsc::Se
                     let images = app.take_pending_images();
                     app.add_user_message(text.clone());
                     app.start_assistant_turn();
-                    let _ = action_tx.send(UserAction::SendMessage(text, images)).await;
+                    if let Err(e) = action_tx.send(UserAction::SendMessage(text, images)).await {
+                        tracing::error!("failed to send SendMessage action: {e}");
+                    }
                 }
             }
         }
@@ -281,7 +305,9 @@ async fn apply_command(cmd: keys::UiCommand, app: &mut App, action_tx: &mpsc::Se
         UiCommand::ScrollToBottom => app.scroll_to_bottom(),
         UiCommand::ClearHistory => {
             app.clear_messages();
-            let _ = action_tx.send(UserAction::ClearHistory).await;
+            if let Err(e) = action_tx.send(UserAction::ClearHistory).await {
+                tracing::error!("failed to send ClearHistory action: {e}");
+            }
         }
         UiCommand::PasteImage => {
             let result = tokio::task::spawn_blocking(|| -> Result<Vec<u8>, String> {

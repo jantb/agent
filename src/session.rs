@@ -9,14 +9,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     app::{ChatMessage, MessageKind},
-    types::Role,
+    types::{Message, Role, ToolCall},
 };
 
 const SESSION_DIR: &str = ".agent";
 const SESSION_FILE: &str = "session.json";
 const VERSION: u32 = 1;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Session {
     pub version: u32,
     pub model: String,
@@ -66,15 +66,15 @@ impl Session {
         Ok(Some(session))
     }
 
-    pub fn save(&mut self, working_dir: &Path) -> anyhow::Result<()> {
-        self.updated_at = Utc::now();
-        let dir = Self::session_dir(working_dir);
-        fs::create_dir_all(&dir)
-            .with_context(|| format!("creating session dir {}", dir.display()))?;
+    pub fn save(&self, working_dir: &Path) -> anyhow::Result<()> {
+        let mut session = self.clone();
+        session.updated_at = Utc::now();
+        let json = serde_json::to_string_pretty(&session).context("serializing session")?;
         let path = Self::session_path(working_dir);
-        let data = serde_json::to_string_pretty(self)?;
-        fs::write(&path, data)
-            .with_context(|| format!("writing session file {}", path.display()))?;
+        let tmp_path = path.with_extension("json.tmp");
+        fs::create_dir_all(path.parent().unwrap_or(working_dir))?;
+        fs::write(&tmp_path, &json).context("writing session temp file")?;
+        fs::rename(&tmp_path, &path).context("renaming session temp file")?;
         Ok(())
     }
 
@@ -82,12 +82,45 @@ impl Session {
         self.messages.push(msg);
     }
 
-    pub fn session_dir(working_dir: &Path) -> PathBuf {
-        working_dir.join(SESSION_DIR)
-    }
-
     pub fn session_path(working_dir: &Path) -> PathBuf {
         working_dir.join(SESSION_DIR).join(SESSION_FILE)
+    }
+
+    /// Build the Ollama history from session messages, prepending the system prompt.
+    pub fn to_ollama_history(&self, system_prompt: &str) -> Vec<Message> {
+        let mut history = vec![Message::new(Role::System, system_prompt.to_string())];
+        let mut i = 0;
+        while i < self.messages.len() {
+            match &self.messages[i] {
+                SessionMessage::Text { role, content } => {
+                    history.push(Message::new(role.clone(), content.clone()));
+                    i += 1;
+                }
+                SessionMessage::ToolCall { .. } => {
+                    // Collect consecutive ToolCall entries into one tool_request Message
+                    let mut calls = Vec::new();
+                    while i < self.messages.len() {
+                        if let SessionMessage::ToolCall { name, arguments } = &self.messages[i] {
+                            calls.push(ToolCall {
+                                id: format!("call-{}", calls.len()),
+                                name: name.clone(),
+                                arguments: serde_json::from_str(arguments)
+                                    .unwrap_or(serde_json::Value::Null),
+                            });
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    history.push(Message::tool_request(String::new(), calls));
+                }
+                SessionMessage::ToolResult { content, .. } => {
+                    history.push(Message::new(Role::Tool, content.clone()));
+                    i += 1;
+                }
+            }
+        }
+        history
     }
 }
 

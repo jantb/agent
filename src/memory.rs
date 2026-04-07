@@ -3,6 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use tracing::{debug, warn};
+
 #[allow(dead_code)]
 pub struct MemoryEntry {
     pub name: String,
@@ -165,16 +167,30 @@ pub fn list_memories(working_dir: &Path) -> Result<String, String> {
 pub fn build_memory_index(working_dir: &Path) -> String {
     let dir = memory_dir(working_dir);
     if !dir.exists() {
+        debug!(dir = %dir.display(), "memory dir does not exist yet, skipping index");
         return String::new();
     }
-    let Ok(rd) = fs::read_dir(&dir) else {
-        return String::new();
+    let rd = match fs::read_dir(&dir) {
+        Ok(rd) => rd,
+        Err(e) => {
+            warn!(dir = %dir.display(), error = %e, "failed to read memory dir");
+            return String::new();
+        }
     };
     let mut lines: Vec<String> = rd
         .flatten()
         .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
         .take(50)
-        .filter_map(|e| read_memory_file(&e.path()).ok())
+        .filter_map(|e| {
+            let path = e.path();
+            match read_memory_file(&path) {
+                Ok(m) => Some(m),
+                Err(err) => {
+                    warn!(path = %path.display(), error = %err, "failed to parse memory file");
+                    None
+                }
+            }
+        })
         .map(|m| format!("- **{}**: {}", m.name, m.description))
         .collect();
     lines.sort();

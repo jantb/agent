@@ -112,21 +112,12 @@ fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 )));
             }
             MessageKind::Thinking => {
-                let content_lines: Vec<&str> = msg.content.lines().collect();
-                let max_lines = 5;
-                let total = content_lines.len();
-                for content_line in &content_lines[..total.min(max_lines)] {
+                for content_line in msg.content.lines() {
                     lines.push(Line::from(Span::styled(
                         format!("  {content_line}"),
                         Style::default()
                             .fg(Color::DarkGray)
                             .add_modifier(Modifier::ITALIC),
-                    )));
-                }
-                if total > max_lines {
-                    lines.push(Line::from(Span::styled(
-                        format!("  (+{} more lines)", total - max_lines),
-                        Style::default().fg(Color::DarkGray),
                     )));
                 }
             }
@@ -168,22 +159,9 @@ fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     if app.thinking {
         if !app.current_thinking_text.is_empty() {
-            let think_lines: Vec<&str> = app.current_thinking_text.lines().collect();
-            let max_lines = 10;
-            let total = think_lines.len();
-            let start = total.saturating_sub(max_lines);
-            for think_line in &think_lines[start..] {
+            for think_line in app.current_thinking_text.lines() {
                 lines.push(Line::from(Span::styled(
                     format!("  {think_line}"),
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::ITALIC),
-                )));
-            }
-            if total > max_lines {
-                let spinner = app.spinner_char();
-                lines.push(Line::from(Span::styled(
-                    format!("  {spinner} ...thinking ({total} lines)"),
                     Style::default()
                         .fg(Color::DarkGray)
                         .add_modifier(Modifier::ITALIC),
@@ -331,7 +309,19 @@ fn draw_status(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     let mut right_spans: Vec<Span> = Vec::new();
 
-    if let (Some(used), Some(total)) = (app.last_prompt_eval_count, app.context_window_size) {
+    // Cumulative token counters
+    {
+        let up = fmt_tokens(app.total_tokens_up);
+        let dn = fmt_tokens(app.total_tokens_down);
+        right_spans.push(Span::styled(
+            format!("\u{2191}{up} \u{2193}{dn}"),
+            Style::default().fg(Color::DarkGray),
+        ));
+        right_spans.push(Span::raw("  "));
+    }
+
+    if let Some(total) = app.context_window_size {
+        let used = app.last_prompt_eval_count.unwrap_or(0);
         if total > 0 {
             let pct = (used as f64 / total as f64 * 100.0).round() as u64;
             right_spans.push(Span::styled(
@@ -411,6 +401,18 @@ fn context_bar(used: u64, total: u64, width: usize) -> String {
     )
 }
 
+fn fmt_tokens(n: u64) -> String {
+    if n < 1_000 {
+        format!("{n}")
+    } else if n < 1_000_000 {
+        let s = format!("{:.1}", n as f64 / 1_000.0);
+        format!("{}k", s.trim_end_matches('0').trim_end_matches('.'))
+    } else {
+        let s = format!("{:.1}", n as f64 / 1_000_000.0);
+        format!("{}M", s.trim_end_matches('0').trim_end_matches('.'))
+    }
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -485,6 +487,25 @@ mod tests {
     #[test]
     fn truncate_long_gets_ellipsis() {
         assert_eq!(truncate("hello world", 5), "hello...");
+    }
+
+    #[test]
+    fn fmt_tokens_small() {
+        assert_eq!(fmt_tokens(0), "0");
+        assert_eq!(fmt_tokens(999), "999");
+    }
+
+    #[test]
+    fn fmt_tokens_kilo() {
+        assert_eq!(fmt_tokens(1_000), "1k");
+        assert_eq!(fmt_tokens(12_345), "12.3k");
+        assert_eq!(fmt_tokens(100_000), "100k");
+    }
+
+    #[test]
+    fn fmt_tokens_mega() {
+        assert_eq!(fmt_tokens(1_000_000), "1M");
+        assert_eq!(fmt_tokens(1_500_000), "1.5M");
     }
 
     #[test]

@@ -5,6 +5,8 @@ use futures::StreamExt;
 use serde_json::json;
 use tokio::sync::mpsc;
 
+use tracing::{debug, trace, warn};
+
 use crate::types::{AgentEvent, Message, ToolCall, ToolDefinition, TurnOutcome};
 
 static CALL_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -12,6 +14,114 @@ static CALL_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 fn next_call_id() -> String {
     let id = CALL_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("call-{id}")
+}
+
+struct LineParser {
+    buf: String,
+}
+
+impl LineParser {
+    fn new() -> Self {
+        Self { buf: String::new() }
+    }
+
+    fn feed(&mut self, bytes: &[u8]) -> Vec<serde_json::Value> {
+        let text = String::from_utf8_lossy(bytes);
+        self.buf.push_str(&text);
+        let last_newline = match self.buf.rfind('\n') {
+            Some(pos) => pos,
+            None => return vec![],
+        };
+        let complete = self.buf[..=last_newline].to_string();
+        self.buf = self.buf[last_newline + 1..].to_string();
+        complete
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| match serde_json::from_str(l.trim()) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!(line = l.trim(), error = %e, "skipping malformed JSON line");
+                    None
+                }
+            })
+            .collect()
+    }
+}
+
+struct ThinkParser {
+    in_think: bool,
+    started: bool,
+    buf: String,
+}
+
+impl ThinkParser {
+    fn new() -> Self {
+        Self {
+            in_think: false,
+            started: false,
+            buf: String::new(),
+        }
+    }
+
+    async fn process(&mut self, delta: &str, tx: &mpsc::Sender<AgentEvent>) -> String {
+        let mut visible = String::new();
+        let mut remaining = delta;
+
+        loop {
+            if self.in_think {
+                if let Some(end_pos) = remaining.find("</think>") {
+                    let think_content = &remaining[..end_pos];
+                    if !think_content.is_empty() {
+                        if let Err(e) = tx
+                            .send(AgentEvent::ThinkingDelta(think_content.to_string()))
+                            .await
+                        {
+                            tracing::error!("failed to send ThinkingDelta: {e}");
+                        }
+                    }
+                    self.in_think = false;
+                    if let Err(e) = tx.send(AgentEvent::ThinkingDone).await {
+                        tracing::error!("failed to send ThinkingDone: {e}");
+                    }
+                    self.started = false;
+                    remaining = &remaining[end_pos + "</think>".len()..];
+                } else {
+                    if !remaining.is_empty() {
+                        if let Err(e) = tx
+                            .send(AgentEvent::ThinkingDelta(remaining.to_string()))
+                            .await
+                        {
+                            tracing::error!("failed to send ThinkingDelta: {e}");
+                        }
+                    }
+                    break;
+                }
+            } else if let Some(start_pos) = remaining.find("<think>") {
+                visible.push_str(&remaining[..start_pos]);
+                self.in_think = true;
+                if !self.started {
+                    self.started = true;
+                    if let Err(e) = tx.send(AgentEvent::ThinkingStarted).await {
+                        tracing::error!("failed to send ThinkingStarted: {e}");
+                    }
+                }
+                self.buf.clear();
+                remaining = &remaining[start_pos + "<think>".len()..];
+            } else {
+                visible.push_str(remaining);
+                break;
+            }
+        }
+        visible
+    }
+
+    async fn finish(&self, tx: &mpsc::Sender<AgentEvent>) {
+        if self.started {
+            if let Err(e) = tx.send(AgentEvent::ThinkingDone).await {
+                tracing::error!("failed to send ThinkingDone (finish): {e}");
+            }
+        }
+    }
 }
 
 pub struct OllamaClient {
@@ -120,6 +230,12 @@ impl OllamaClient {
             }
         });
 
+        debug!(
+            model = active_model,
+            messages = history.len(),
+            tools = tools.len(),
+            "ollama request start"
+        );
         let resp = self
             .http
             .post(&url)
@@ -131,95 +247,69 @@ impl OllamaClient {
             .context("Ollama returned error status")?;
 
         let mut stream = resp.bytes_stream();
-        let mut full_text = String::new();
-        let mut in_think = false;
-        let mut thinking_started = false;
-        let mut think_buf = String::new();
+        let mut lines = LineParser::new();
+        let mut think = ThinkParser::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
-        let mut line_buf = String::new();
+        let mut full_text = String::new();
         let mut done_flag = false;
 
         while let Some(chunk) = stream.next().await {
             let bytes = chunk.context("stream read error")?;
-            let text = String::from_utf8_lossy(&bytes);
-            line_buf.push_str(&text);
-
-            let last_newline = line_buf.rfind('\n');
-            let complete_part = match last_newline {
-                Some(pos) => {
-                    let complete = line_buf[..=pos].to_string();
-                    line_buf = line_buf[pos + 1..].to_string();
-                    complete
-                }
-                None => continue,
-            };
-
-            for line in complete_part.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                let val: serde_json::Value = match serde_json::from_str(line) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-
-                // Check for tool_calls in this chunk
+            trace!(bytes = bytes.len(), "stream chunk");
+            for val in lines.feed(&bytes) {
                 if let Some(calls) = val["message"]["tool_calls"].as_array() {
-                    if !calls.is_empty() {
-                        for tc in calls {
-                            let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
-                            let arguments = tc["function"]["arguments"].clone();
-                            tool_calls.push(ToolCall {
-                                id: next_call_id(),
-                                name,
-                                arguments,
-                            });
-                        }
+                    for tc in calls {
+                        let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
+                        let arguments = tc["function"]["arguments"].clone();
+                        tool_calls.push(ToolCall {
+                            id: next_call_id(),
+                            name,
+                            arguments,
+                        });
                     }
                 }
 
                 if let Some(delta) = val["message"]["content"].as_str() {
                     if !delta.is_empty() {
-                        // Parse <think>...</think> tags
-                        let remaining = process_think_delta(
-                            delta,
-                            &mut in_think,
-                            &mut thinking_started,
-                            &mut think_buf,
-                            &tx,
-                        )
-                        .await;
+                        let remaining = think.process(delta, &tx).await;
                         if !remaining.is_empty() {
                             full_text.push_str(&remaining);
-                            let _ = tx.send(AgentEvent::TextDelta(remaining)).await;
+                            if let Err(e) = tx.send(AgentEvent::TextDelta(remaining)).await {
+                                tracing::error!("failed to send TextDelta: {e}");
+                            }
                         }
                     }
                 }
 
                 if val["done"].as_bool() == Some(true) {
-                    if thinking_started {
-                        let _ = tx.send(AgentEvent::ThinkingDone).await;
-                    }
+                    think.finish(&tx).await;
                     let eval_count = val["eval_count"].as_u64().unwrap_or(0);
                     let prompt_eval_count = val["prompt_eval_count"].as_u64().unwrap_or(0);
                     if eval_count > 0 || prompt_eval_count > 0 {
-                        let _ = tx
+                        if let Err(e) = tx
                             .send(AgentEvent::TurnStats {
                                 eval_count,
                                 prompt_eval_count,
                             })
-                            .await;
+                            .await
+                        {
+                            tracing::error!("failed to send TurnStats: {e}");
+                        }
                     }
+                    debug!(
+                        eval_count,
+                        prompt_eval_count,
+                        tool_calls = tool_calls.len(),
+                        "ollama stream done"
+                    );
                     done_flag = true;
-                    break;
                 }
-            }
-            if done_flag {
-                break;
             }
         }
 
+        if !done_flag {
+            warn!("stream ended without done=true — possible Ollama hang");
+        }
         if !tool_calls.is_empty() {
             Ok(TurnOutcome::ToolCalls(full_text, tool_calls))
         } else {
@@ -290,62 +380,6 @@ fn parse_context_window(resp: &serde_json::Value) -> Option<u64> {
     None
 }
 
-/// Process a streaming delta that may contain <think>...</think> tags.
-/// Returns the visible (non-thinking) text portion.
-async fn process_think_delta(
-    delta: &str,
-    in_think: &mut bool,
-    thinking_started: &mut bool,
-    think_buf: &mut String,
-    tx: &mpsc::Sender<AgentEvent>,
-) -> String {
-    let mut visible = String::new();
-    let mut remaining = delta;
-
-    loop {
-        if *in_think {
-            if let Some(end_pos) = remaining.find("</think>") {
-                // Emit the rest of thinking content
-                let think_content = &remaining[..end_pos];
-                if !think_content.is_empty() {
-                    let _ = tx
-                        .send(AgentEvent::ThinkingDelta(think_content.to_string()))
-                        .await;
-                }
-                *in_think = false;
-                let _ = tx.send(AgentEvent::ThinkingDone).await;
-                *thinking_started = false;
-                remaining = &remaining[end_pos + "</think>".len()..];
-            } else {
-                // All remaining is thinking content
-                if !remaining.is_empty() {
-                    let _ = tx
-                        .send(AgentEvent::ThinkingDelta(remaining.to_string()))
-                        .await;
-                }
-                break;
-            }
-        } else {
-            if let Some(start_pos) = remaining.find("<think>") {
-                // Text before <think> is visible
-                visible.push_str(&remaining[..start_pos]);
-                *in_think = true;
-                if !*thinking_started {
-                    *thinking_started = true;
-                    let _ = tx.send(AgentEvent::ThinkingStarted).await;
-                }
-                think_buf.clear();
-                remaining = &remaining[start_pos + "<think>".len()..];
-            } else {
-                // No more think tags
-                visible.push_str(remaining);
-                break;
-            }
-        }
-    }
-    visible
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,17 +388,8 @@ mod tests {
 
     async fn collect_events(delta: &str) -> (Vec<AgentEvent>, String) {
         let (tx, mut rx) = mpsc::channel(32);
-        let mut in_think = false;
-        let mut thinking_started = false;
-        let mut think_buf = String::new();
-        let visible = process_think_delta(
-            delta,
-            &mut in_think,
-            &mut thinking_started,
-            &mut think_buf,
-            &tx,
-        )
-        .await;
+        let mut parser = ThinkParser::new();
+        let visible = parser.process(delta, &tx).await;
         drop(tx);
         let mut events = Vec::new();
         while let Some(e) = rx.recv().await {
@@ -499,5 +524,37 @@ mod tests {
             }
         });
         assert_eq!(parse_context_window(&resp), Some(32768));
+    }
+
+    #[test]
+    fn line_parser_complete_line() {
+        let mut p = LineParser::new();
+        let vals = p.feed(b"{\"done\":true}\n");
+        assert_eq!(vals.len(), 1);
+        assert_eq!(vals[0]["done"], true);
+    }
+
+    #[test]
+    fn line_parser_partial_buffered() {
+        let mut p = LineParser::new();
+        let vals = p.feed(b"{\"done\":");
+        assert!(vals.is_empty());
+        let vals = p.feed(b"true}\n");
+        assert_eq!(vals.len(), 1);
+    }
+
+    #[test]
+    fn line_parser_multiple_lines() {
+        let mut p = LineParser::new();
+        let vals = p.feed(b"{\"a\":1}\n{\"b\":2}\n");
+        assert_eq!(vals.len(), 2);
+    }
+
+    #[test]
+    fn line_parser_invalid_json_skipped() {
+        let mut p = LineParser::new();
+        let vals = p.feed(b"not json\n{\"ok\":1}\n");
+        assert_eq!(vals.len(), 1);
+        assert_eq!(vals[0]["ok"], 1);
     }
 }
