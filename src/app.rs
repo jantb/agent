@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use crate::autocomplete::Autocomplete;
 use crate::input::InputState;
 use crate::types::{ChatMessage, MessageKind, Role, ToolCall, ToolResult};
 
@@ -29,6 +30,7 @@ pub struct App {
     pub total_tokens_up: u64,
     pub total_tokens_down: u64,
     pub pending_images: Vec<String>, // base64-encoded images to attach to next message
+    pub autocomplete: Option<Autocomplete>,
 }
 
 impl App {
@@ -58,6 +60,7 @@ impl App {
             total_tokens_up: 0,
             total_tokens_down: 0,
             pending_images: Vec::new(),
+            autocomplete: None,
         }
     }
 
@@ -241,7 +244,7 @@ impl App {
     }
 
     pub fn help_text() -> &'static str {
-        "Commands:\n  /clear, /new  \u{2014} clear conversation\n  /help         \u{2014} show this help\n\nKeybindings:\n  Enter          \u{2014} send message\n  Shift+Enter    \u{2014} newline\n  Esc            \u{2014} cancel streaming\n  Ctrl+C         \u{2014} quit\n  Ctrl+U         \u{2014} clear input\n  Ctrl+W         \u{2014} delete word\n  Ctrl+A         \u{2014} start of line\n  Ctrl+E         \u{2014} end of line\n  Ctrl+V         \u{2014} paste image from clipboard\n  Up/Down        \u{2014} input history\n  Shift+Up/Down  \u{2014} scroll chat\n  PageUp/PageDn  \u{2014} scroll page\n  End            \u{2014} scroll to bottom\n  Mouse wheel    \u{2014} scroll chat"
+        "Commands:\n  /clear, /new  \u{2014} clear conversation\n  /help         \u{2014} show this help\n\nKeybindings:\n  Enter          \u{2014} send message\n  Shift+Enter    \u{2014} newline\n  Tab            \u{2014} autocomplete /commands\n  Esc            \u{2014} cancel streaming\n  Ctrl+C         \u{2014} quit\n  Ctrl+U         \u{2014} clear input\n  Ctrl+W         \u{2014} delete word\n  Ctrl+A         \u{2014} start of line\n  Ctrl+E         \u{2014} end of line\n  Ctrl+V         \u{2014} paste image from clipboard\n  Up/Down        \u{2014} input history\n  Shift+Up/Down  \u{2014} scroll chat\n  PageUp/PageDn  \u{2014} scroll page\n  End            \u{2014} scroll to bottom\n  Mouse wheel    \u{2014} scroll chat"
     }
 
     pub fn set_error(&mut self, msg: String) {

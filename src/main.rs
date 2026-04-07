@@ -1,5 +1,6 @@
 mod agent;
 mod app;
+mod autocomplete;
 mod config;
 mod highlight;
 mod input;
@@ -115,7 +116,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Load or create session
     let memory_index = memory::build_memory_index(&working_dir);
-    let sys_prompt = system_prompt(&memory_index);
+    let sys_prompt = system_prompt(&working_dir, &memory_index);
     let (session, resumed) = match Session::load(&working_dir)? {
         Some(s) => {
             let date = s.updated_at.format("%Y-%m-%d %H:%M").to_string();
@@ -231,6 +232,70 @@ async fn handle_terminal_event(
 
 async fn apply_command(cmd: keys::UiCommand, app: &mut App, action_tx: &mpsc::Sender<UserAction>) {
     use keys::UiCommand;
+
+    // Autocomplete active: intercept keys
+    if let Some(ac) = &mut app.autocomplete {
+        match cmd {
+            UiCommand::Tab | UiCommand::Submit => {
+                if let Some(name) = ac.selected_command() {
+                    app.input.text = name.to_string();
+                    app.input.cursor_pos = app.input.text.len();
+                }
+                app.autocomplete = None;
+                if matches!(cmd, UiCommand::Submit) {
+                    let text = app.input.take();
+                    handle_slash_or_send(text, app, action_tx).await;
+                }
+                return;
+            }
+            UiCommand::HistoryPrev | UiCommand::ScrollUp => {
+                ac.move_up();
+                return;
+            }
+            UiCommand::HistoryNext | UiCommand::ScrollDown => {
+                ac.move_down();
+                return;
+            }
+            UiCommand::Cancel => {
+                app.autocomplete = None;
+                return;
+            }
+            UiCommand::InsertChar(c) => {
+                app.input.push_char(c);
+                ac.filter(&app.input.text);
+                if ac.is_empty() {
+                    app.autocomplete = None;
+                }
+                return;
+            }
+            UiCommand::Backspace => {
+                app.input.pop_char();
+                if app.input.text.is_empty() || !app.input.text.starts_with('/') {
+                    app.autocomplete = None;
+                } else {
+                    ac.filter(&app.input.text);
+                    if ac.is_empty() {
+                        app.autocomplete = None;
+                    }
+                }
+                return;
+            }
+            UiCommand::Quit => {} // fall through
+            _ => {
+                app.autocomplete = None;
+            }
+        }
+    }
+
+    // Trigger autocomplete on '/' as first char
+    if let UiCommand::InsertChar('/') = &cmd {
+        if app.input.text.is_empty() {
+            app.input.push_char('/');
+            app.autocomplete = Some(autocomplete::Autocomplete::open());
+            return;
+        }
+    }
+
     match cmd {
         UiCommand::Quit => {
             if let Err(e) = action_tx.send(UserAction::Quit).await {
@@ -239,36 +304,21 @@ async fn apply_command(cmd: keys::UiCommand, app: &mut App, action_tx: &mpsc::Se
             app.running = false;
         }
         UiCommand::Cancel => {
-            if let Err(e) = action_tx.send(UserAction::Cancel).await {
-                tracing::error!("failed to send Cancel action: {e}");
+            if app.streaming {
+                if let Err(e) = action_tx.send(UserAction::Cancel).await {
+                    tracing::error!("failed to send Cancel action: {e}");
+                }
             }
         }
         UiCommand::Submit => {
             if !app.input.is_empty() {
                 let text = app.input.take();
-                if text.trim() == "/clear" || text.trim() == "/new" {
-                    app.clear_messages();
-                    if let Err(e) = action_tx.send(UserAction::ClearHistory).await {
-                        tracing::error!("failed to send ClearHistory action: {e}");
-                    }
-                } else if text.trim() == "/help" {
-                    app.messages.push(ChatMessage {
-                        role: types::Role::Assistant,
-                        content: App::help_text().to_string(),
-                        kind: MessageKind::Text,
-                    });
-                } else {
-                    let images = app.take_pending_images();
-                    app.add_user_message(text.clone());
-                    app.start_assistant_turn();
-                    if let Err(e) = action_tx.send(UserAction::SendMessage(text, images)).await {
-                        tracing::error!("failed to send SendMessage action: {e}");
-                    }
-                }
+                handle_slash_or_send(text, app, action_tx).await;
             }
         }
         UiCommand::InsertNewline => app.input.push_char('\n'),
         UiCommand::InsertChar(c) => app.input.push_char(c),
+        UiCommand::Tab => {}
         UiCommand::Paste(data) => app.input.insert_paste(data),
         UiCommand::Backspace => app.input.pop_char(),
         UiCommand::DeleteWord => app.input.delete_word(),
@@ -304,6 +354,28 @@ async fn apply_command(cmd: keys::UiCommand, app: &mut App, action_tx: &mpsc::Se
             }
         }
         UiCommand::Ignore => {}
+    }
+}
+
+async fn handle_slash_or_send(text: String, app: &mut App, action_tx: &mpsc::Sender<UserAction>) {
+    if text.trim() == "/clear" || text.trim() == "/new" {
+        app.clear_messages();
+        if let Err(e) = action_tx.send(UserAction::ClearHistory).await {
+            tracing::error!("failed to send ClearHistory action: {e}");
+        }
+    } else if text.trim() == "/help" {
+        app.messages.push(ChatMessage {
+            role: types::Role::Assistant,
+            content: App::help_text().to_string(),
+            kind: MessageKind::Text,
+        });
+    } else {
+        let images = app.take_pending_images();
+        app.add_user_message(text.clone());
+        app.start_assistant_turn();
+        if let Err(e) = action_tx.send(UserAction::SendMessage(text, images)).await {
+            tracing::error!("failed to send SendMessage action: {e}");
+        }
     }
 }
 

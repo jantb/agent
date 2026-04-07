@@ -17,7 +17,8 @@ Everything runs locally. Your data, your files, and your models stay on your mac
 - 🛠️ **Extensible Toolset:** Out-of-the-box support for filesystem operations, subprocess execution, and more.
 - 🔌 **MCP Integration:** Connect to any Model Context Protocol (MCP) server to extend Agent's capabilities with external data and tools.
 - 🧠 **Persistent Memory & Sessions:** Agent maintains long-term memory and session history, allowing for continuous, context-aware workflows.
-- 🎨 **Rich TUI Experience:** A beautiful, high-performance interface built with `ratatogs` and `tokio`, featuring full Markdown rendering.
+- 🎨 **Rich TUI Experience:** A beautiful, high-performance interface built with `ratatui` and `tokio`, featuring full Markdown rendering.
+- ⚡ **Slash Command Autocomplete:** Type `/` to get an interactive autocomplete popup for built-in commands.
 - 🛡️ **Secure by Design:** All file-based tools are strictly sandboxed to the current working directory using safe path resolution.
 
 ## 🚀 Getting Started
@@ -25,7 +26,7 @@ Everything runs locally. Your data, your files, and your models stay on your mac
 ### Prerequisites
 
 - [Rust toolchain](https://rustup.rs/) (latest stable)
-- [Ollama](https://ollama.com/) (running locally with a model like `llama3` or `mistral` pulled)
+- [Ollama](https://ollama.com/) (running locally with a model pulled, e.g. `ollama pull gemma4:26b`)
 
 ### Installation
 
@@ -42,10 +43,39 @@ cargo install --path .
 Simply run the agent in your terminal:
 
 ```bash
-agent
+agent                              # uses default model (gemma4:26b)
+agent --model llama3               # specify a model
+agent --ollama-url http://host:11434  # custom Ollama endpoint
 ```
 
 Once running, you can chat with the agent, ask it to read files, run shell commands, or explore your directory.
+
+### Keybindings
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Send message |
+| `Shift+Enter` | Insert newline |
+| `Tab` | Autocomplete `/commands` |
+| `Esc` | Cancel streaming / dismiss autocomplete |
+| `Ctrl+C` | Quit |
+| `Ctrl+U` | Clear input |
+| `Ctrl+W` | Delete word |
+| `Ctrl+A` / `Ctrl+E` | Start / end of line |
+| `Ctrl+V` | Paste image from clipboard |
+| `Up` / `Down` | Input history |
+| `Shift+Up` / `Shift+Down` | Scroll chat |
+| `PageUp` / `PageDown` | Scroll page |
+
+### Slash Commands
+
+Type `/` as the first character to open the autocomplete popup, then filter by typing more characters.
+
+| Command | Description |
+|---------|-------------|
+| `/clear` | Clear conversation and reset session |
+| `/new` | Alias for `/clear` |
+| `/help` | Show help text |
 
 ## ⚙️ Configuration
 

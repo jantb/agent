@@ -22,6 +22,7 @@ pub enum UiCommand {
     PageDown,
     ScrollToBottom,
     ClearHistory,
+    Tab,
     PasteImage,
     Paste(String),
     Ignore,
@@ -30,13 +31,7 @@ pub enum UiCommand {
 pub fn map_key(key: KeyEvent, streaming: bool) -> UiCommand {
     match (key.code, key.modifiers) {
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => UiCommand::Quit,
-        (KeyCode::Esc, _) => {
-            if streaming {
-                UiCommand::Cancel
-            } else {
-                UiCommand::Ignore
-            }
-        }
+        (KeyCode::Esc, _) => UiCommand::Cancel,
         // When streaming, ignore all input keys
         (KeyCode::Char('w'), KeyModifiers::CONTROL) if !streaming => UiCommand::DeleteWord,
         (KeyCode::Char('u'), KeyModifiers::CONTROL) if !streaming => UiCommand::ClearLine,
@@ -56,6 +51,7 @@ pub fn map_key(key: KeyEvent, streaming: bool) -> UiCommand {
         (KeyCode::PageUp, _) => UiCommand::PageUp,
         (KeyCode::PageDown, _) => UiCommand::PageDown,
         (KeyCode::End, _) => UiCommand::ScrollToBottom,
+        (KeyCode::Tab, _) if !streaming => UiCommand::Tab,
         (KeyCode::Char(c), _) if !streaming => UiCommand::InsertChar(c),
         _ => UiCommand::Ignore,
     }
@@ -95,7 +91,7 @@ mod tests {
         );
         assert_eq!(
             map_key(key(KeyCode::Esc, KeyModifiers::NONE), false),
-            UiCommand::Ignore
+            UiCommand::Cancel
         );
     }
 

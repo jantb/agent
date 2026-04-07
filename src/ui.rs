@@ -1,12 +1,13 @@
 use ratatui::{
-    layout::{Constraint, Layout, Position},
+    layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Wrap},
+    widgets::{Block, Clear, Paragraph, Wrap},
     Frame,
 };
 
 use crate::app::App;
+use crate::autocomplete::COMMANDS;
 use crate::markdown::markdown_to_lines;
 use crate::types::{MessageKind, Role};
 
@@ -28,6 +29,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_chat(frame, app, chat_area);
     draw_input(frame, app, input_area);
     draw_status(frame, app, status_area);
+
+    if let Some(ac) = &app.autocomplete {
+        draw_autocomplete(frame, ac, input_area);
+    }
 }
 
 fn draw_title(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -316,6 +321,57 @@ fn draw_input(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             area.y + cursor_row,
         ));
     }
+}
+
+fn draw_autocomplete(frame: &mut Frame, ac: &crate::autocomplete::Autocomplete, input_area: Rect) {
+    if ac.filtered.is_empty() {
+        return;
+    }
+    let max_visible = 6;
+    let count = ac.filtered.len().min(max_visible);
+    let popup_height = count as u16 + 2;
+    let popup_width = 35u16.min(input_area.width);
+    let popup_y = input_area.y.saturating_sub(popup_height);
+    let area = Rect::new(input_area.x, popup_y, popup_width, popup_height);
+
+    let lines: Vec<Line> = ac
+        .filtered
+        .iter()
+        .take(max_visible)
+        .enumerate()
+        .map(|(i, &cmd_idx)| {
+            let cmd = &COMMANDS[cmd_idx];
+            let (bg, fg) = if i == ac.selected {
+                (Color::DarkGray, Color::White)
+            } else {
+                (Color::Reset, Color::White)
+            };
+            Line::from(vec![
+                Span::styled(
+                    format!(" {:<10}", cmd.name),
+                    Style::default()
+                        .bg(bg)
+                        .fg(fg)
+                        .add_modifier(if i == ac.selected {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                Span::styled(
+                    format!(" {}", cmd.desc),
+                    Style::default().bg(bg).fg(Color::Indexed(245)),
+                ),
+            ])
+        })
+        .collect();
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::bordered().border_style(Style::default().fg(Color::DarkGray))),
+        area,
+    );
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
