@@ -361,10 +361,17 @@ impl OllamaClient {
 }
 
 fn parse_context_window(resp: &serde_json::Value) -> Option<u64> {
-    if let Some(n) = resp["model_info"]["llama.context_length"].as_u64() {
+    let mi = &resp["model_info"];
+    if let Some(arch) = mi["general.architecture"].as_str() {
+        let key = format!("{arch}.context_length");
+        if let Some(n) = mi[&key].as_u64() {
+            return Some(n);
+        }
+    }
+    if let Some(n) = mi["llama.context_length"].as_u64() {
         return Some(n);
     }
-    if let Some(n) = resp["model_info"]["general.context_length"].as_u64() {
+    if let Some(n) = mi["general.context_length"].as_u64() {
         return Some(n);
     }
     if let Some(params) = resp["parameters"].as_str() {
@@ -524,6 +531,29 @@ mod tests {
             }
         });
         assert_eq!(parse_context_window(&resp), Some(32768));
+    }
+
+    #[test]
+    fn parse_context_window_dynamic_arch() {
+        let resp = serde_json::json!({
+            "model_info": {
+                "general.architecture": "gemma4",
+                "gemma4.context_length": 131072
+            }
+        });
+        assert_eq!(parse_context_window(&resp), Some(131072));
+    }
+
+    #[test]
+    fn parse_context_window_dynamic_arch_takes_precedence() {
+        let resp = serde_json::json!({
+            "model_info": {
+                "general.architecture": "gemma4",
+                "gemma4.context_length": 131072,
+                "llama.context_length": 32768
+            }
+        });
+        assert_eq!(parse_context_window(&resp), Some(131072));
     }
 
     #[test]
