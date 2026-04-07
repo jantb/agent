@@ -1,0 +1,276 @@
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+use anyhow::Context;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    app::{ChatMessage, MessageKind},
+    types::Role,
+};
+
+const SESSION_DIR: &str = ".agent";
+const SESSION_FILE: &str = "session.json";
+const VERSION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+pub struct Session {
+    pub version: u32,
+    pub model: String,
+    pub working_dir: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub messages: Vec<SessionMessage>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "kind")]
+pub enum SessionMessage {
+    #[serde(rename = "text")]
+    Text { role: Role, content: String },
+    #[serde(rename = "tool_call")]
+    ToolCall { name: String, arguments: String },
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        name: String,
+        content: String,
+        is_error: bool,
+    },
+}
+
+impl Session {
+    pub fn new(model: &str, working_dir: &Path) -> Self {
+        let now = Utc::now();
+        Self {
+            version: VERSION,
+            model: model.to_string(),
+            working_dir: working_dir.to_string_lossy().into_owned(),
+            created_at: now,
+            updated_at: now,
+            messages: Vec::new(),
+        }
+    }
+
+    pub fn load(working_dir: &Path) -> anyhow::Result<Option<Session>> {
+        let path = Self::session_path(working_dir);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let data = fs::read_to_string(&path)
+            .with_context(|| format!("reading session file {}", path.display()))?;
+        let session = serde_json::from_str(&data)
+            .with_context(|| format!("parsing session file {}", path.display()))?;
+        Ok(Some(session))
+    }
+
+    pub fn save(&mut self, working_dir: &Path) -> anyhow::Result<()> {
+        self.updated_at = Utc::now();
+        let dir = Self::session_dir(working_dir);
+        fs::create_dir_all(&dir)
+            .with_context(|| format!("creating session dir {}", dir.display()))?;
+        let path = Self::session_path(working_dir);
+        let data = serde_json::to_string_pretty(self)?;
+        fs::write(&path, data)
+            .with_context(|| format!("writing session file {}", path.display()))?;
+        Ok(())
+    }
+
+    pub fn append_message(&mut self, msg: SessionMessage) {
+        self.messages.push(msg);
+    }
+
+    pub fn session_dir(working_dir: &Path) -> PathBuf {
+        working_dir.join(SESSION_DIR)
+    }
+
+    pub fn session_path(working_dir: &Path) -> PathBuf {
+        working_dir.join(SESSION_DIR).join(SESSION_FILE)
+    }
+}
+
+// --- Conversions ---
+
+impl From<&ChatMessage> for SessionMessage {
+    fn from(msg: &ChatMessage) -> Self {
+        match &msg.kind {
+            MessageKind::Text => SessionMessage::Text {
+                role: msg.role.clone(),
+                content: msg.content.clone(),
+            },
+            MessageKind::ToolCall {
+                name, arguments, ..
+            } => SessionMessage::ToolCall {
+                name: name.clone(),
+                arguments: arguments.clone(),
+            },
+            MessageKind::ToolResult { name, is_error } => SessionMessage::ToolResult {
+                name: name.clone(),
+                content: msg.content.clone(),
+                is_error: *is_error,
+            },
+            MessageKind::Thinking => SessionMessage::Text {
+                role: msg.role.clone(),
+                content: String::new(),
+            },
+        }
+    }
+}
+
+impl From<ChatMessage> for SessionMessage {
+    fn from(msg: ChatMessage) -> Self {
+        SessionMessage::from(&msg)
+    }
+}
+
+impl From<SessionMessage> for ChatMessage {
+    fn from(msg: SessionMessage) -> Self {
+        match msg {
+            SessionMessage::Text { role, content } => ChatMessage {
+                role,
+                content,
+                kind: MessageKind::Text,
+            },
+            SessionMessage::ToolCall { name, arguments } => ChatMessage {
+                role: Role::Assistant,
+                content: String::new(),
+                kind: MessageKind::ToolCall {
+                    call_id: String::new(),
+                    name,
+                    arguments,
+                },
+            },
+            SessionMessage::ToolResult {
+                name,
+                content,
+                is_error,
+            } => ChatMessage {
+                role: Role::Tool,
+                content,
+                kind: MessageKind::ToolResult { name, is_error },
+            },
+        }
+    }
+}
+
+// --- .gitignore helper ---
+
+pub fn ensure_gitignore(working_dir: &Path) -> anyhow::Result<()> {
+    let path = working_dir.join(".gitignore");
+    let entry = ".agent/\n";
+    if path.exists() {
+        let contents =
+            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        if !contents.lines().any(|l| l.trim() == ".agent/") {
+            let mut updated = contents;
+            if !updated.ends_with('\n') {
+                updated.push('\n');
+            }
+            updated.push_str(entry);
+            fs::write(&path, updated).with_context(|| format!("writing {}", path.display()))?;
+        }
+    } else {
+        fs::write(&path, entry).with_context(|| format!("creating {}", path.display()))?;
+    }
+    Ok(())
+}
+
+// --- Tests ---
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn tmp() -> TempDir {
+        tempfile::tempdir().expect("tempdir")
+    }
+
+    #[test]
+    fn new_session_has_empty_messages() {
+        let dir = tmp();
+        let session = Session::new("gpt-4", dir.path());
+        assert!(session.messages.is_empty());
+    }
+
+    #[test]
+    fn save_and_load_roundtrip() {
+        let dir = tmp();
+        let mut session = Session::new("gpt-4", dir.path());
+        session.append_message(SessionMessage::Text {
+            role: Role::User,
+            content: "hello".into(),
+        });
+        session.save(dir.path()).unwrap();
+
+        let loaded = Session::load(dir.path()).unwrap().expect("session present");
+        assert_eq!(loaded.messages.len(), 1);
+        assert!(
+            matches!(&loaded.messages[0], SessionMessage::Text { content, .. } if content == "hello")
+        );
+    }
+
+    #[test]
+    fn load_missing_returns_none() {
+        let dir = tmp();
+        let result = Session::load(dir.path()).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn append_message_adds_to_vec() {
+        let dir = tmp();
+        let mut session = Session::new("gpt-4", dir.path());
+        session.append_message(SessionMessage::Text {
+            role: Role::User,
+            content: "hi".into(),
+        });
+        session.append_message(SessionMessage::ToolCall {
+            name: "shell".into(),
+            arguments: "{}".into(),
+        });
+        assert_eq!(session.messages.len(), 2);
+    }
+
+    #[test]
+    fn ensure_gitignore_creates_file() {
+        let dir = tmp();
+        ensure_gitignore(dir.path()).unwrap();
+        let contents = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(contents.contains(".agent/"));
+    }
+
+    #[test]
+    fn ensure_gitignore_appends_if_missing() {
+        let dir = tmp();
+        fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();
+        ensure_gitignore(dir.path()).unwrap();
+        let contents = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(contents.contains("target/"));
+        assert!(contents.contains(".agent/"));
+    }
+
+    #[test]
+    fn ensure_gitignore_no_duplicate() {
+        let dir = tmp();
+        fs::write(dir.path().join(".gitignore"), ".agent/\n").unwrap();
+        ensure_gitignore(dir.path()).unwrap();
+        let contents = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert_eq!(contents.matches(".agent/").count(), 1);
+    }
+
+    #[test]
+    fn session_message_to_chat_message_roundtrip() {
+        let original = SessionMessage::Text {
+            role: Role::Assistant,
+            content: "hello there".into(),
+        };
+        let chat: ChatMessage = original.into();
+        assert_eq!(chat.role, Role::Assistant);
+        assert_eq!(chat.content, "hello there");
+        let back: SessionMessage = SessionMessage::from(&chat);
+        assert!(matches!(back, SessionMessage::Text { role, .. } if role == Role::Assistant));
+    }
+}
