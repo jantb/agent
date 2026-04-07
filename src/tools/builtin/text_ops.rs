@@ -63,15 +63,17 @@ pub async fn run_edit_file(call: &ToolCall, working_dir: &Path) -> Result<String
                 std::fs::write(&path, &new_content).map_err(|e| format!("write error: {e}"))?;
                 let old_lines = old_string.lines().count();
                 let new_lines = new_string.lines().count();
+                let diff = format_compact_diff(&old_string, &new_string, 30);
                 Ok(format!(
-                    "edited {}: replaced {old_lines} line(s) with {new_lines} line(s)",
+                    "edited {}: replaced {old_lines} line(s) with {new_lines} line(s)\n{diff}",
                     path_str
                 ))
             }
             n if replace_all => {
                 let new_content = content.replace(old_string.as_str(), new_string.as_str());
                 std::fs::write(&path, &new_content).map_err(|e| format!("write error: {e}"))?;
-                Ok(format!("edited {}: replaced {n} occurrence(s)", path_str))
+                let diff = format_compact_diff(&old_string, &new_string, 30);
+                Ok(format!("edited {}: replaced {n} occurrence(s)\n{diff}", path_str))
             }
             n => Err(format!(
                 "old_string matched {n} times in {} — must be unique. Add more surrounding context to old_string.",
@@ -115,9 +117,10 @@ pub async fn run_replace_lines(call: &ToolCall, working_dir: &Path) -> Result<St
             ));
         }
         let old_count = end_line - start_line + 1;
-        let new_lines: Vec<&str> = new_content.lines().collect();
-        let new_count = new_lines.len();
-        lines.splice((start_line - 1)..end_line, new_lines);
+        let old_text = lines[start_line - 1..end_line].join("\n");
+        let new_lines_vec: Vec<&str> = new_content.lines().collect();
+        let new_count = new_lines_vec.len();
+        lines.splice((start_line - 1)..end_line, new_lines_vec);
         let result = lines.join("\n");
         let result = if content.ends_with('\n') {
             format!("{result}\n")
@@ -125,8 +128,9 @@ pub async fn run_replace_lines(call: &ToolCall, working_dir: &Path) -> Result<St
             result
         };
         std::fs::write(&path, &result).map_err(|e| format!("write error: {e}"))?;
+        let diff = format_compact_diff(&old_text, &new_content, 30);
         Ok(format!(
-            "replaced lines {start_line}-{end_line} ({old_count} lines) with {new_count} lines in {path_str}"
+            "replaced lines {start_line}-{end_line} ({old_count} lines) with {new_count} lines in {path_str}\n{diff}"
         ))
     })
     .await
@@ -168,6 +172,39 @@ fn lcs_diff<'a>(a: &[&'a str], b: &[&'a str]) -> Vec<DiffLine<'a>> {
         }
     }
     result
+}
+
+fn format_compact_diff(old: &str, new: &str, max_lines: usize) -> String {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let diff = lcs_diff(&old_lines, &new_lines);
+    let mut out = String::new();
+    let mut count = 0;
+    let changed: usize = diff
+        .iter()
+        .filter(|d| !matches!(d, DiffLine::Context(_)))
+        .count();
+    for d in &diff {
+        if count >= max_lines {
+            let remaining = changed.saturating_sub(count);
+            if remaining > 0 {
+                out.push_str(&format!("(+{remaining} more diff lines)\n"));
+            }
+            break;
+        }
+        match d {
+            DiffLine::Context(_) => continue,
+            DiffLine::Add(l) => {
+                out.push_str(&format!("+{l}\n"));
+                count += 1;
+            }
+            DiffLine::Remove(l) => {
+                out.push_str(&format!("-{l}\n"));
+                count += 1;
+            }
+        }
+    }
+    out.trim_end_matches('\n').to_string()
 }
 
 pub async fn run_diff_files(call: &ToolCall, working_dir: &Path) -> Result<String, String> {

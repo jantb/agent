@@ -244,7 +244,25 @@ impl App {
     }
 
     pub fn help_text() -> &'static str {
-        "Commands:\n  /clear, /new  \u{2014} clear conversation\n  /help         \u{2014} show this help\n\nKeybindings:\n  Enter          \u{2014} send message\n  Shift+Enter    \u{2014} newline\n  Tab            \u{2014} autocomplete /commands\n  Esc            \u{2014} cancel streaming\n  Ctrl+C         \u{2014} quit\n  Ctrl+U         \u{2014} clear input\n  Ctrl+W         \u{2014} delete word\n  Ctrl+A         \u{2014} start of line\n  Ctrl+E         \u{2014} end of line\n  Ctrl+V         \u{2014} paste image from clipboard\n  Up/Down        \u{2014} input history\n  Shift+Up/Down  \u{2014} scroll chat\n  PageUp/PageDn  \u{2014} scroll page\n  End            \u{2014} scroll to bottom\n  Mouse wheel    \u{2014} scroll chat"
+        "Commands:\n\
+         \u{2014} /clear, /new: clear conversation\n\
+         \u{2014} /help: show this help\n\n\
+         Keybindings:\n\
+         \u{2014} Enter: send message\n\
+         \u{2014} Shift+Enter: newline\n\
+         \u{2014} Tab: autocomplete /commands\n\
+         \u{2014} Esc: cancel streaming\n\
+         \u{2014} Ctrl+C: quit\n\
+         \u{2014} Ctrl+U: clear input\n\
+         \u{2014} Ctrl+W: delete word\n\
+         \u{2014} Ctrl+A: start of line\n\
+         \u{2014} Ctrl+E: end of line\n\
+         \u{2014} Ctrl+V: paste image from clipboard\n\
+         \u{2014} Up/Down: input history\n\
+         \u{2014} Shift+Up/Down: scroll chat\n\
+         \u{2014} PageUp/PageDn: scroll page\n\
+         \u{2014} End: scroll to bottom\n\
+         \u{2014} Mouse wheel: scroll chat"
     }
 
     pub fn set_error(&mut self, msg: String) {

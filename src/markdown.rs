@@ -394,6 +394,7 @@ pub fn markdown_to_lines(text: &str, indent: &str) -> Vec<Line<'static>> {
             Event::InlineMath(text) | Event::DisplayMath(text) => {
                 state.push_text(text.as_ref());
             }
+            _ => {}
         }
         let _ = (in_table_header, in_table_row); // suppress unused warnings
     }

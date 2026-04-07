@@ -173,7 +173,7 @@ fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                         format!("  {} {}:", symbol, name),
                         Style::default().fg(color),
                     )));
-                    let max_lines = 5;
+                    let max_lines = 10;
                     let total = content_lines.len();
                     for content_line in &content_lines[..total.min(max_lines)] {
                         lines.push(Line::from(Span::styled(
