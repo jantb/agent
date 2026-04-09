@@ -87,7 +87,11 @@ pub async fn run_line_count(call: &ToolCall, working_dir: &Path) -> Result<Strin
     let base_str = call.arguments["path"].as_str().unwrap_or(".").to_string();
     let exts: Vec<String> = call.arguments["extensions"]
         .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let working_dir = working_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
