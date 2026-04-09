@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
@@ -81,6 +81,83 @@ pub async fn run_glob_files(call: &ToolCall, working_dir: &Path) -> Result<Strin
     })
     .await
     .map_err(|e| format!("task join error: {e}"))?
+}
+
+pub async fn run_line_count(call: &ToolCall, working_dir: &Path) -> Result<String, String> {
+    let base_str = call.arguments["path"].as_str().unwrap_or(".").to_string();
+    let exts: Vec<String> = call.arguments["extensions"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let working_dir = working_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let root = resolve_path(&base_str, &working_dir);
+        let mut files: Vec<(PathBuf, usize)> = Vec::new();
+        count_lines_recursive(&root, &exts, &mut files, 0)?;
+        if files.is_empty() {
+            return Ok("no files found".into());
+        }
+        files.sort_by(|a, b| b.1.cmp(&a.1));
+        let total: usize = files.iter().map(|(_, c)| c).sum();
+        let truncated = files.len() >= 500;
+        let mut out = String::new();
+        for (path, count) in &files {
+            let rel = path.strip_prefix(&working_dir).unwrap_or(path);
+            out.push_str(&format!("{:>6}  {}\n", count, rel.display()));
+        }
+        out.push_str(&format!(
+            "\n[{} file(s), {} total lines{}]",
+            files.len(),
+            total,
+            if truncated { ", truncated at 500" } else { "" }
+        ));
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
+fn count_lines_recursive(
+    path: &Path,
+    exts: &[String],
+    files: &mut Vec<(PathBuf, usize)>,
+    depth: usize,
+) -> Result<(), String> {
+    if depth > 20 || files.len() >= 500 {
+        return Ok(());
+    }
+    let entries = std::fs::read_dir(path).map_err(|e| format!("read dir error: {e}"))?;
+    for entry in entries.filter_map(|e| e.ok()) {
+        if files.len() >= 500 {
+            break;
+        }
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') || IGNORE_DIRS.contains(&name_str.as_ref()) {
+            continue;
+        }
+        let entry_path = entry.path();
+        let meta = entry.metadata().map_err(|e| format!("stat error: {e}"))?;
+        if meta.is_dir() {
+            count_lines_recursive(&entry_path, exts, files, depth + 1)?;
+        } else if meta.is_file() {
+            if !exts.is_empty() {
+                let ok = entry_path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| exts.iter().any(|x| x == e))
+                    .unwrap_or(false);
+                if !ok {
+                    continue;
+                }
+            }
+            if let Ok(bytes) = std::fs::read(&entry_path) {
+                let count = bytes.iter().filter(|&&b| b == b'\n').count();
+                files.push((entry_path, count));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn search_recursive(

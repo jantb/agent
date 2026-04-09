@@ -22,6 +22,7 @@ pub async fn execute_built_in(call: &ToolCall, working_dir: &Path) -> ToolResult
         "append_file" => builtin::run_append_file(call, working_dir).await,
         "delete_path" => builtin::run_delete_path(call, working_dir).await,
         "glob_files" => builtin::run_glob_files(call, working_dir).await,
+        "line_count" => builtin::run_line_count(call, working_dir).await,
         "remember" => builtin::run_remember(call, working_dir).await,
         "recall" => builtin::run_recall(call, working_dir).await,
         "forget" => builtin::run_forget(call, working_dir).await,
@@ -593,6 +594,68 @@ mod tests {
         let call = make_call("read_file", json!({"path": "multibyte.txt"}));
         let result = execute_built_in(&call, dir.path()).await;
         assert!(!result.is_error, "{}", result.output);
+    }
+
+    #[tokio::test]
+    async fn line_count_counts_lines() {
+        let dir = setup_dir();
+        std::fs::write(dir.path().join("a.rs"), "fn main() {}\n// comment\n").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "line1\nline2\nline3\n").unwrap();
+        let call = make_call("line_count", json!({"path": "."}));
+        let result = execute_built_in(&call, dir.path()).await;
+        assert!(!result.is_error, "{}", result.output);
+        assert!(result.output.contains("a.rs"));
+        assert!(result.output.contains("b.rs"));
+        assert!(result.output.contains("total lines"));
+    }
+
+    #[tokio::test]
+    async fn line_count_extension_filter() {
+        let dir = setup_dir();
+        std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(dir.path().join("readme.md"), "# Title\nText\nMore\n").unwrap();
+        let call = make_call("line_count", json!({"path": ".", "extensions": ["rs"]}));
+        let result = execute_built_in(&call, dir.path()).await;
+        assert!(!result.is_error, "{}", result.output);
+        assert!(result.output.contains("main.rs"));
+        assert!(!result.output.contains("readme.md"));
+    }
+
+    #[tokio::test]
+    async fn line_count_empty_dir() {
+        let dir = setup_dir();
+        let call = make_call("line_count", json!({}));
+        let result = execute_built_in(&call, dir.path()).await;
+        assert!(!result.is_error, "{}", result.output);
+        assert_eq!(result.output, "no files found");
+    }
+
+    #[tokio::test]
+    async fn line_count_skips_hidden_and_ignored() {
+        let dir = setup_dir();
+        std::fs::write(dir.path().join(".hidden"), "a\nb\n").unwrap();
+        std::fs::create_dir(dir.path().join("target")).unwrap();
+        std::fs::write(dir.path().join("target").join("build.rs"), "x\n").unwrap();
+        std::fs::write(dir.path().join("real.rs"), "fn x() {}\n").unwrap();
+        let call = make_call("line_count", json!({"path": "."}));
+        let result = execute_built_in(&call, dir.path()).await;
+        assert!(!result.is_error, "{}", result.output);
+        assert!(result.output.contains("real.rs"));
+        assert!(!result.output.contains(".hidden"));
+        assert!(!result.output.contains("build.rs"));
+    }
+
+    #[tokio::test]
+    async fn line_count_sorted_descending() {
+        let dir = setup_dir();
+        std::fs::write(dir.path().join("big.rs"), "a\nb\nc\nd\ne\n").unwrap();
+        std::fs::write(dir.path().join("small.rs"), "x\n").unwrap();
+        let call = make_call("line_count", json!({"path": "."}));
+        let result = execute_built_in(&call, dir.path()).await;
+        assert!(!result.is_error, "{}", result.output);
+        let big_pos = result.output.find("big.rs").unwrap();
+        let small_pos = result.output.find("small.rs").unwrap();
+        assert!(big_pos < small_pos, "big.rs should appear before small.rs");
     }
 
     #[tokio::test]

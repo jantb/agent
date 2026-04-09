@@ -187,6 +187,23 @@ pub fn built_in_tool_definitions() -> Vec<ToolDefinition> {
             }),
             source: ToolSource::BuiltIn,
         },
+        ToolDefinition {
+            name: "line_count".into(),
+            description: "Count lines in files recursively. Returns files sorted by line count descending, plus a total. Skips hidden files and build dirs.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Directory to scan (default '.')" },
+                    "extensions": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Filter by file extensions, e.g. [\"rs\", \"toml\"]. Omit for all files."
+                    }
+                },
+                "required": []
+            }),
+            source: ToolSource::BuiltIn,
+        },
     ]
 }
 
@@ -197,7 +214,7 @@ mod tests {
     #[test]
     fn built_in_tool_definitions_count() {
         let defs = built_in_tool_definitions();
-        assert_eq!(defs.len(), 14);
+        assert_eq!(defs.len(), 15);
         let names: Vec<_> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"write_file"));
@@ -213,5 +230,6 @@ mod tests {
         assert!(names.contains(&"recall"));
         assert!(names.contains(&"forget"));
         assert!(names.contains(&"list_memories"));
+        assert!(names.contains(&"line_count"));
     }
 }
