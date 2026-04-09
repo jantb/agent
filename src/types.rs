@@ -79,6 +79,7 @@ pub enum AgentEvent {
     },
     TurnDone,
     Error(String),
+    LoopDetected,
 }
 
 #[derive(Debug)]

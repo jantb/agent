@@ -100,7 +100,7 @@ impl App {
         self.thinking = thinking;
     }
 
-    pub fn finish_assistant_turn(&mut self) {
+    pub fn flush_thinking(&mut self) {
         let think = std::mem::take(&mut self.current_thinking_text);
         if !think.is_empty() {
             self.messages.push(ChatMessage {
@@ -109,6 +109,11 @@ impl App {
                 kind: MessageKind::Thinking,
             });
         }
+        self.thinking = false;
+    }
+
+    pub fn finish_assistant_turn(&mut self) {
+        self.flush_thinking();
         let text = std::mem::take(&mut self.current_streaming_text);
         if !text.is_empty() {
             self.messages.push(ChatMessage {
@@ -244,25 +249,26 @@ impl App {
     }
 
     pub fn help_text() -> &'static str {
-        "Commands:\n\
-         \u{2014} /clear, /new: clear conversation\n\
-         \u{2014} /help: show this help\n\n\
-         Keybindings:\n\
-         \u{2014} Enter: send message\n\
-         \u{2014} Shift+Enter: newline\n\
-         \u{2014} Tab: autocomplete /commands\n\
-         \u{2014} Esc: cancel streaming\n\
-         \u{2014} Ctrl+C: quit\n\
-         \u{2014} Ctrl+U: clear input\n\
-         \u{2014} Ctrl+W: delete word\n\
-         \u{2014} Ctrl+A: start of line\n\
-         \u{2014} Ctrl+E: end of line\n\
-         \u{2014} Ctrl+V: paste image from clipboard\n\
-         \u{2014} Up/Down: input history\n\
-         \u{2014} Shift+Up/Down: scroll chat\n\
-         \u{2014} PageUp/PageDn: scroll page\n\
-         \u{2014} End: scroll to bottom\n\
-         \u{2014} Mouse wheel: scroll chat"
+        "Commands:
+         — /clear, /new: clear conversation
+         — /help: show this help
+
+         Keybindings:
+         — Enter: send message
+         — Shift+Enter: newline
+         — Tab: autocomplete /commands
+         — Esc: cancel streaming
+         — Ctrl+C: quit
+         — Ctrl+U: clear input
+         — Ctrl+W: delete word
+         — Ctrl+A: start of line
+         — Ctrl+E: end of line
+         — Ctrl+V: paste image from clipboard
+         — Up/Down: input history
+         — Shift+Up/Down: scroll chat
+         — PageUp/PageDn: scroll page
+         — End: scroll to bottom
+         — Mouse wheel: scroll chat"
     }
 
     pub fn set_error(&mut self, msg: String) {
@@ -731,5 +737,54 @@ mod tests {
         app.clear_messages();
         assert_eq!(app.total_tokens_down, 100);
         assert_eq!(app.total_tokens_up, 200);
+    }
+
+    // --- thinking ---
+    #[test]
+    fn flush_thinking_moves_to_messages() {
+        let mut app = make_app();
+        app.current_thinking_text = "deep thought".into();
+        app.thinking = true;
+        app.flush_thinking();
+        assert!(!app.thinking);
+        assert!(app.current_thinking_text.is_empty());
+        assert_eq!(app.messages.len(), 1);
+        assert_eq!(app.messages[0].content, "deep thought");
+        assert!(matches!(app.messages[0].kind, MessageKind::Thinking));
+    }
+
+    #[test]
+    fn flush_thinking_empty_noop() {
+        let mut app = make_app();
+        app.flush_thinking();
+        assert!(app.messages.is_empty());
+    }
+
+    #[test]
+    fn finish_assistant_turn_flushes_thinking_and_text() {
+        let mut app = make_app();
+        app.current_thinking_text = "reason".into();
+        app.current_streaming_text = "response".into();
+        app.streaming = true;
+        app.finish_assistant_turn();
+        assert_eq!(app.messages.len(), 2);
+        assert!(matches!(app.messages[0].kind, MessageKind::Thinking));
+        assert_eq!(app.messages[0].content, "reason");
+        assert!(matches!(app.messages[1].kind, MessageKind::Text));
+        assert_eq!(app.messages[1].content, "response");
+        assert!(!app.streaming);
+        assert!(app.current_thinking_text.is_empty());
+        assert!(app.current_streaming_text.is_empty());
+    }
+
+    #[test]
+    fn finish_assistant_turn_with_only_thinking() {
+        let mut app = make_app();
+        app.current_thinking_text = "thought".into();
+        app.streaming = true;
+        app.finish_assistant_turn();
+        assert_eq!(app.messages.len(), 1);
+        assert!(matches!(app.messages[0].kind, MessageKind::Thinking));
+        assert!(!app.streaming);
     }
 }

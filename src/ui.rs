@@ -233,23 +233,16 @@ fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         ]));
     }
 
-    let total_height = lines.len() as u32;
-    let area_height = area.height as u32;
-    let max_scroll = total_height.saturating_sub(area_height);
-
-    let scroll: u16 = if app.auto_scroll {
-        max_scroll as u16
-    } else {
-        let clamped = app.scroll_offset.min(max_scroll);
-        max_scroll.saturating_sub(clamped) as u16
-    };
-
-    frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .scroll((scroll, 0)),
-        area,
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let total_height = paragraph.line_count(area.width) as u32;
+    let scroll = compute_scroll(
+        total_height,
+        area.height as u32,
+        app.auto_scroll,
+        app.scroll_offset,
     );
+
+    frame.render_widget(paragraph.scroll((scroll, 0)), area);
 }
 
 fn draw_input(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -300,17 +293,13 @@ fn draw_input(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 ]));
             }
         }
-        if lines.is_empty() {
-            lines.push(Line::from(vec![Span::styled(
-                base_prefix,
-                Style::default().fg(Color::Cyan),
-            )]));
-        }
         frame.render_widget(Paragraph::new(lines), area);
         let text_before_cursor = &app.input.text[..app.input.cursor_pos];
         let cursor_row = text_before_cursor.matches('\n').count() as u16;
         let last_newline = text_before_cursor.rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let cursor_col = app.input.text[last_newline..app.input.cursor_pos].len() as u16;
+        let cursor_col = app.input.text[last_newline..app.input.cursor_pos]
+            .chars()
+            .count() as u16;
         let row_prefix_len = if cursor_row == 0 {
             first_line_prefix_len
         } else {
@@ -513,6 +502,20 @@ fn truncate(s: &str, max: usize) -> String {
         format!("{}...", &s[..end])
     }
 }
+fn compute_scroll(
+    total_height: u32,
+    area_height: u32,
+    auto_scroll: bool,
+    scroll_offset: u32,
+) -> u16 {
+    let max_scroll = total_height.saturating_sub(area_height);
+    if auto_scroll {
+        max_scroll as u16
+    } else {
+        let clamped = scroll_offset.min(max_scroll);
+        max_scroll.saturating_sub(clamped) as u16
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -608,5 +611,56 @@ mod tests {
         // CJK characters
         let cjk = "你好世界测试";
         assert_eq!(truncate(cjk, 4), "你好世界...");
+    }
+
+    #[test]
+    fn compute_scroll_auto_scroll_bottom() {
+        // 100 visual lines, 20 viewport => scroll to line 80
+        assert_eq!(compute_scroll(100, 20, true, 0), 80);
+    }
+
+    #[test]
+    fn compute_scroll_auto_scroll_content_fits() {
+        // Content fits in viewport — no scroll needed
+        assert_eq!(compute_scroll(10, 20, true, 0), 0);
+    }
+
+    #[test]
+    fn compute_scroll_manual_at_bottom() {
+        // offset=0 means "at the bottom" => same as auto_scroll
+        assert_eq!(compute_scroll(100, 20, false, 0), 80);
+    }
+
+    #[test]
+    fn compute_scroll_manual_scrolled_up() {
+        // offset=30 means 30 lines up from bottom => scroll to line 50
+        assert_eq!(compute_scroll(100, 20, false, 30), 50);
+    }
+
+    #[test]
+    fn compute_scroll_manual_offset_clamped() {
+        // offset exceeds max_scroll — clamp to top
+        assert_eq!(compute_scroll(100, 20, false, 999), 0);
+    }
+
+    #[test]
+    fn line_count_accounts_for_wrapping() {
+        // A single logical line that's 80 chars wide, rendered in a 20-col area => 4 visual lines
+        let long_line = "a".repeat(80);
+        let paragraph = Paragraph::new(vec![Line::from(long_line)]).wrap(Wrap { trim: false });
+        let visual = paragraph.line_count(20);
+        assert_eq!(visual, 4);
+    }
+
+    #[test]
+    fn scroll_with_wrapped_lines_reaches_bottom() {
+        // 5 logical lines, each 40 chars, in a 20-col viewport (10 rows high)
+        // Each line wraps to 2 visual lines => 10 visual total, fits exactly
+        let lines: Vec<Line> = (0..5).map(|_| Line::from("a".repeat(40))).collect();
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+        let total_height = paragraph.line_count(20) as u32;
+        assert_eq!(total_height, 10);
+        // With viewport height 6, auto_scroll should be at 4
+        assert_eq!(compute_scroll(total_height, 6, true, 0), 4);
     }
 }

@@ -25,6 +25,10 @@ pub async fn run_read_file(call: &ToolCall, working_dir: &Path) -> Result<String
         let start = start.unwrap_or(0);
         let end = end.map(|n| n.min(total)).unwrap_or(total);
 
+        if total == 0 {
+            return Ok(String::new());
+        }
+
         if start >= total {
             return Err(format!(
                 "start_line {} exceeds file length ({} lines)",
@@ -42,7 +46,12 @@ pub async fn run_read_file(call: &ToolCall, working_dir: &Path) -> Result<String
 
         const MAX_CHARS: usize = 50_000;
         if out.len() > MAX_CHARS {
-            out.truncate(MAX_CHARS);
+            // find nearest char boundary at or before MAX_CHARS
+            let trunc = (0..=MAX_CHARS)
+                .rev()
+                .find(|&i| out.is_char_boundary(i))
+                .unwrap_or(0);
+            out.truncate(trunc);
             out.push_str(&format!(
                 "\n[... truncated at {MAX_CHARS} chars, use start_line/end_line to read specific ranges ...]"
             ));

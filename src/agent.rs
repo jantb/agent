@@ -57,6 +57,27 @@ Check recall at the start of new topics to see if you've saved relevant context 
     prompt
 }
 
+fn text_fingerprint(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    text.split_whitespace().for_each(|w| w.hash(&mut hasher));
+    hasher.finish()
+}
+
+/// Returns Some(fingerprint) if the text was already seen in the window.
+fn check_repeated_text(text: &str, window: &std::collections::VecDeque<u64>) -> Option<u64> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let fp = text_fingerprint(trimmed);
+    if window.contains(&fp) {
+        Some(fp)
+    } else {
+        None
+    }
+}
+
 pub enum UserAction {
     SendMessage(String, Vec<String>), // text, base64 images
     Cancel,
@@ -113,6 +134,49 @@ impl AgentTask {
         self.session.to_ollama_history(&self.system_prompt)
     }
 
+    /// Check for a repeated-text loop.
+    /// Returns `Some(true)` → `continue 'turn` (nudge injected),
+    ///         `Some(false)` → `break 'turn` (loop persists after nudge),
+    ///         `None` → no repetition, proceed normally.
+    async fn handle_loop_check(
+        &mut self,
+        text: &str,
+        recent_fps: &mut std::collections::VecDeque<u64>,
+        nudged: &mut bool,
+        nudge_msg_idx: &mut usize,
+        context: &str,
+    ) -> Option<bool> {
+        if let Some(fp) = check_repeated_text(text, recent_fps) {
+            if *nudged {
+                warn!("loop persists after nudge, breaking");
+                self.session.messages.truncate(*nudge_msg_idx);
+                self.save_or_emit_error().await;
+                self.emit(AgentEvent::LoopDetected).await;
+                self.emit(AgentEvent::TurnDone).await;
+                return Some(false);
+            }
+            warn!(fp = %fp, context, "repeated text detected, injecting nudge");
+            *nudged = true;
+            *nudge_msg_idx = self.session.messages.len();
+            self.session.append_message(SessionMessage::Text {
+                role: Role::User,
+                content: "You are repeating yourself. Provide a different, complete response."
+                    .into(),
+                images: vec![],
+            });
+            self.save_or_emit_error().await;
+            return Some(true);
+        }
+        let fp = text_fingerprint(text.trim());
+        if !text.trim().is_empty() {
+            recent_fps.push_back(fp);
+            if recent_fps.len() > 20 {
+                recent_fps.pop_front();
+            }
+        }
+        None
+    }
+
     async fn emit(&self, event: AgentEvent) {
         if let Err(e) = self.event_tx.send(event).await {
             tracing::error!("failed to send agent event: {e}");
@@ -167,6 +231,7 @@ impl AgentTask {
         for call in calls {
             self.emit(AgentEvent::ToolRequested(call.clone())).await;
             self.session.append_message(SessionMessage::ToolCall {
+                id: call.id.clone(),
                 name: call.name.clone(),
                 arguments: call.arguments.to_string(),
             });
@@ -220,15 +285,63 @@ impl AgentTask {
                         tools = self.tools.len(),
                         "turn start"
                     );
+                    const MAX_TOOL_ROUNDS: u32 = 25;
+                    let mut round: u32 = 0;
+                    let mut recent_text_fps: std::collections::VecDeque<u64> =
+                        std::collections::VecDeque::with_capacity(20);
+                    let mut nudged = false;
+                    let mut nudge_msg_idx: usize = 0;
                     'turn: loop {
                         match self.execute_turn().await {
                             TurnPhaseResult::Text(content) => {
                                 debug!(chars = content.len(), "turn result: text");
+                                round += 1;
+                                if round > MAX_TOOL_ROUNDS {
+                                    warn!(rounds = round, "hard cap reached");
+                                    self.emit(AgentEvent::LoopDetected).await;
+                                    self.emit(AgentEvent::TurnDone).await;
+                                    break 'turn;
+                                }
+                                match self
+                                    .handle_loop_check(
+                                        &content,
+                                        &mut recent_text_fps,
+                                        &mut nudged,
+                                        &mut nudge_msg_idx,
+                                        "text",
+                                    )
+                                    .await
+                                {
+                                    Some(true) => continue 'turn,
+                                    Some(false) => break 'turn,
+                                    None => {}
+                                }
                                 self.handle_text_turn(content).await;
                                 break 'turn;
                             }
                             TurnPhaseResult::ToolCalls(text, calls) => {
                                 debug!(count = calls.len(), "turn result: tool calls");
+                                round += 1;
+                                if round > MAX_TOOL_ROUNDS {
+                                    warn!(rounds = round, "hard cap reached");
+                                    self.emit(AgentEvent::LoopDetected).await;
+                                    self.emit(AgentEvent::TurnDone).await;
+                                    break 'turn;
+                                }
+                                match self
+                                    .handle_loop_check(
+                                        &text,
+                                        &mut recent_text_fps,
+                                        &mut nudged,
+                                        &mut nudge_msg_idx,
+                                        "tool_round",
+                                    )
+                                    .await
+                                {
+                                    Some(true) => continue 'turn,
+                                    Some(false) => break 'turn,
+                                    None => {}
+                                }
                                 self.handle_tool_calls(text, calls).await;
                             }
                             TurnPhaseResult::Cancelled => {
@@ -271,6 +384,58 @@ impl AgentTask {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_fingerprint_same_text() {
+        let a = text_fingerprint("hello world");
+        let b = text_fingerprint("hello world");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn text_fingerprint_whitespace_normalized() {
+        let a = text_fingerprint("hello   world");
+        let b = text_fingerprint("hello world");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn text_fingerprint_different_text() {
+        let a = text_fingerprint("hello world");
+        let b = text_fingerprint("goodbye world");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn check_repeated_text_empty_returns_none() {
+        let window = std::collections::VecDeque::new();
+        assert!(check_repeated_text("", &window).is_none());
+        assert!(check_repeated_text("   ", &window).is_none());
+    }
+
+    #[test]
+    fn check_repeated_text_detects_repeat() {
+        let mut window = std::collections::VecDeque::new();
+        window.push_back(text_fingerprint("hello world"));
+        assert!(check_repeated_text("hello world", &window).is_some());
+    }
+
+    #[test]
+    fn check_repeated_text_no_false_positive() {
+        let mut window = std::collections::VecDeque::new();
+        window.push_back(text_fingerprint("hello world"));
+        assert!(check_repeated_text("different text", &window).is_none());
+    }
+
+    #[test]
+    fn check_repeated_text_window_catches_cycle() {
+        let mut window = std::collections::VecDeque::new();
+        window.push_back(text_fingerprint("message A"));
+        window.push_back(text_fingerprint("message B"));
+        window.push_back(text_fingerprint("message C"));
+        // A appears again — should detect
+        assert!(check_repeated_text("message A", &window).is_some());
+    }
 
     #[test]
     fn test_system_prompt_empty_memory() {

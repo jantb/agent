@@ -575,6 +575,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_file_empty_file() {
+        let dir = setup_dir();
+        std::fs::write(dir.path().join("empty.txt"), "").unwrap();
+        let call = make_call("read_file", json!({"path": "empty.txt"}));
+        let result = execute_built_in(&call, dir.path()).await;
+        assert!(!result.is_error, "{}", result.output);
+        assert_eq!(result.output, "");
+    }
+
+    #[tokio::test]
+    async fn read_file_multibyte_truncation_no_panic() {
+        let dir = setup_dir();
+        let line = "あいうえお\n";
+        let content = line.repeat(10_000);
+        std::fs::write(dir.path().join("multibyte.txt"), &content).unwrap();
+        let call = make_call("read_file", json!({"path": "multibyte.txt"}));
+        let result = execute_built_in(&call, dir.path()).await;
+        assert!(!result.is_error, "{}", result.output);
+    }
+
+    #[tokio::test]
     async fn list_memories_shows_stored_memories() {
         let dir = setup_dir();
         for (name, desc) in [("Alpha note", "first"), ("Beta note", "second")] {

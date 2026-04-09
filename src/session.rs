@@ -33,8 +33,14 @@ pub enum SessionMessage {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<String>,
     },
+    #[serde(rename = "thinking")]
+    Thinking { content: String },
     #[serde(rename = "tool_call")]
-    ToolCall { name: String, arguments: String },
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: String,
+    },
     #[serde(rename = "tool_result")]
     ToolResult {
         name: String,
@@ -104,13 +110,21 @@ impl Session {
                     history.push(msg);
                     i += 1;
                 }
+                SessionMessage::Thinking { .. } => {
+                    i += 1;
+                }
                 SessionMessage::ToolCall { .. } => {
                     // Collect consecutive ToolCall entries into one tool_request Message
                     let mut calls = Vec::new();
                     while i < self.messages.len() {
-                        if let SessionMessage::ToolCall { name, arguments } = &self.messages[i] {
+                        if let SessionMessage::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                        } = &self.messages[i]
+                        {
                             calls.push(ToolCall {
-                                id: format!("call-{}", calls.len()),
+                                id: id.clone(),
                                 name: name.clone(),
                                 arguments: serde_json::from_str(arguments)
                                     .unwrap_or(serde_json::Value::Null),
@@ -143,8 +157,11 @@ impl From<&ChatMessage> for SessionMessage {
                 images: vec![],
             },
             MessageKind::ToolCall {
-                name, arguments, ..
+                call_id,
+                name,
+                arguments,
             } => SessionMessage::ToolCall {
+                id: call_id.clone(),
                 name: name.clone(),
                 arguments: arguments.clone(),
             },
@@ -153,10 +170,8 @@ impl From<&ChatMessage> for SessionMessage {
                 content: msg.content.clone(),
                 is_error: *is_error,
             },
-            MessageKind::Thinking => SessionMessage::Text {
-                role: msg.role.clone(),
-                content: String::new(),
-                images: vec![],
+            MessageKind::Thinking => SessionMessage::Thinking {
+                content: msg.content.clone(),
             },
         }
     }
@@ -176,11 +191,20 @@ impl From<SessionMessage> for ChatMessage {
                 content,
                 kind: MessageKind::Text,
             },
-            SessionMessage::ToolCall { name, arguments } => ChatMessage {
+            SessionMessage::Thinking { content } => ChatMessage {
+                role: Role::Assistant,
+                content,
+                kind: MessageKind::Thinking,
+            },
+            SessionMessage::ToolCall {
+                id,
+                name,
+                arguments,
+            } => ChatMessage {
                 role: Role::Assistant,
                 content: String::new(),
                 kind: MessageKind::ToolCall {
-                    call_id: String::new(),
+                    call_id: id,
                     name,
                     arguments,
                 },
@@ -273,6 +297,7 @@ mod tests {
             images: vec![],
         });
         session.append_message(SessionMessage::ToolCall {
+            id: "call-0".into(),
             name: "shell".into(),
             arguments: "{}".into(),
         });
@@ -362,5 +387,104 @@ mod tests {
         assert_eq!(chat.content, "hello there");
         let back: SessionMessage = SessionMessage::from(&chat);
         assert!(matches!(back, SessionMessage::Text { role, .. } if role == Role::Assistant));
+    }
+
+    #[test]
+    fn thinking_content_preserved_through_save_load() {
+        let dir = tmp();
+        let mut session = Session::new("gpt-4", dir.path());
+        session.append_message(SessionMessage::Thinking {
+            content: "reasoning about X".into(),
+        });
+        session.save(dir.path()).unwrap();
+        let loaded = Session::load(dir.path()).unwrap().unwrap();
+        assert!(
+            matches!(&loaded.messages[0], SessionMessage::Thinking { content } if content == "reasoning about X")
+        );
+    }
+
+    #[test]
+    fn tool_call_id_preserved_through_save_load() {
+        let dir = tmp();
+        let mut session = Session::new("gpt-4", dir.path());
+        session.append_message(SessionMessage::ToolCall {
+            id: "call-42".into(),
+            name: "read_file".into(),
+            arguments: "{}".into(),
+        });
+        session.save(dir.path()).unwrap();
+        let loaded = Session::load(dir.path()).unwrap().unwrap();
+        assert!(
+            matches!(&loaded.messages[0], SessionMessage::ToolCall { id, .. } if id == "call-42")
+        );
+    }
+
+    #[test]
+    fn thinking_roundtrip_through_chat_message() {
+        let chat = ChatMessage {
+            role: Role::Assistant,
+            content: "deep thoughts".into(),
+            kind: MessageKind::Thinking,
+        };
+        let session: SessionMessage = SessionMessage::from(&chat);
+        let back: ChatMessage = session.into();
+        assert_eq!(back.content, "deep thoughts");
+        assert!(matches!(back.kind, MessageKind::Thinking));
+    }
+
+    #[test]
+    fn tool_call_id_roundtrip_through_chat_message() {
+        let chat = ChatMessage {
+            role: Role::Assistant,
+            content: String::new(),
+            kind: MessageKind::ToolCall {
+                call_id: "my-id".into(),
+                name: "shell".into(),
+                arguments: "{}".into(),
+            },
+        };
+        let session: SessionMessage = SessionMessage::from(&chat);
+        let back: ChatMessage = session.into();
+        assert!(
+            matches!(back.kind, MessageKind::ToolCall { ref call_id, .. } if call_id == "my-id")
+        );
+    }
+
+    #[test]
+    fn to_ollama_history_skips_thinking() {
+        let dir = tmp();
+        let mut session = Session::new("gpt-4", dir.path());
+        session.append_message(SessionMessage::Text {
+            role: Role::User,
+            content: "hello".into(),
+            images: vec![],
+        });
+        session.append_message(SessionMessage::Thinking {
+            content: "internal".into(),
+        });
+        session.append_message(SessionMessage::Text {
+            role: Role::Assistant,
+            content: "hi".into(),
+            images: vec![],
+        });
+        let history = session.to_ollama_history("sys");
+        // system + user + assistant = 3; thinking skipped
+        assert_eq!(history.len(), 3);
+        assert!(history.iter().all(|m| m.role != Role::Tool));
+    }
+
+    #[test]
+    fn to_ollama_history_preserves_tool_call_id() {
+        let dir = tmp();
+        let mut session = Session::new("gpt-4", dir.path());
+        session.append_message(SessionMessage::ToolCall {
+            id: "call-7".into(),
+            name: "shell".into(),
+            arguments: "{}".into(),
+        });
+        let history = session.to_ollama_history("sys");
+        // system + tool_request = 2
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[1].tool_calls[0].id, "call-7");
     }
 }

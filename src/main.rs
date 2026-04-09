@@ -132,7 +132,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Build App
     let mut app = App::new(cli.model.clone(), working_dir.clone());
-    app.context_window_size = Some(131_072);
+    app.context_window_size = match ollama.fetch_context_window().await {
+        Ok(Some(n)) => Some(n),
+        Ok(None) | Err(_) => Some(131_072),
+    };
     app.mcp_connected = mcp_registry.connected_servers().await;
     app.mcp_failed = mcp_registry.failed_servers().await;
     app.resumed_session = resumed;
@@ -347,10 +350,14 @@ async fn apply_command(cmd: keys::UiCommand, app: &mut App, action_tx: &mpsc::Se
                 encode_image_to_png(&img)
             })
             .await;
-            if let Ok(Ok(data)) = result {
-                use base64::Engine;
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                app.add_pending_image(b64);
+            match result {
+                Ok(Ok(data)) => {
+                    use base64::Engine;
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                    app.add_pending_image(b64);
+                }
+                Ok(Err(e)) => app.set_error(format!("clipboard error: {e}")),
+                Err(e) => app.set_error(format!("paste task error: {e}")),
             }
         }
         UiCommand::Ignore => {}
@@ -383,7 +390,7 @@ fn handle_agent_event(event: Option<AgentEvent>, app: &mut App) -> bool {
     match event {
         Some(AgentEvent::ThinkingStarted) => app.set_thinking(true),
         Some(AgentEvent::ThinkingDelta(d)) => app.append_thinking_text(&d),
-        Some(AgentEvent::ThinkingDone) => app.set_thinking(false),
+        Some(AgentEvent::ThinkingDone) => app.flush_thinking(),
         Some(AgentEvent::TextDelta(d)) => app.append_streaming_text(&d),
         Some(AgentEvent::ToolRequested(c)) => app.add_tool_call(&c),
         Some(AgentEvent::ToolCompleted(r)) => app.add_tool_result(&r),
@@ -397,6 +404,10 @@ fn handle_agent_event(event: Option<AgentEvent>, app: &mut App) -> bool {
         Some(AgentEvent::Error(e)) => {
             app.finish_assistant_turn();
             app.set_error(e);
+        }
+        Some(AgentEvent::LoopDetected) => {
+            app.finish_assistant_turn();
+            app.set_error("Loop detected — model was repeating itself".into());
         }
         None => return false,
     }
