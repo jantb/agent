@@ -75,6 +75,7 @@ pub enum AgentEvent {
     ToolCompleted(ToolResult),
     TurnStats {
         eval_count: u64,
+        eval_duration_ns: u64,
         prompt_eval_count: u64,
     },
     TurnDone,
@@ -142,6 +143,7 @@ pub struct ChatMessage {
 #[derive(Debug, Clone)]
 pub enum MessageKind {
     Text,
+    Queued,
     Thinking,
     ToolCall {
         call_id: String,

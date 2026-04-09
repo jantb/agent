@@ -174,6 +174,11 @@ impl From<&ChatMessage> for SessionMessage {
             MessageKind::Thinking => SessionMessage::Thinking {
                 content: msg.content.clone(),
             },
+            MessageKind::Queued => SessionMessage::Text {
+                role: msg.role.clone(),
+                content: msg.content.clone(),
+                images: vec![],
+            },
         }
     }
 }

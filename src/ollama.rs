@@ -386,11 +386,13 @@ impl OllamaClient {
                         }
                     }
                     let eval_count = val["eval_count"].as_u64().unwrap_or(0);
+                    let eval_duration_ns = val["eval_duration"].as_u64().unwrap_or(0);
                     let prompt_eval_count = val["prompt_eval_count"].as_u64().unwrap_or(0);
                     if (eval_count > 0 || prompt_eval_count > 0)
                         && tx
                             .send(AgentEvent::TurnStats {
                                 eval_count,
+                                eval_duration_ns,
                                 prompt_eval_count,
                             })
                             .await

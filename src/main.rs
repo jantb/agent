@@ -191,7 +191,7 @@ async fn main() -> anyhow::Result<()> {
                 handle_terminal_event(maybe_event, &mut app, &action_tx).await;
             }
             agent_event = event_rx.recv() => {
-                if !handle_agent_event(agent_event, &mut app) {
+                if !handle_agent_event(agent_event, &mut app, &action_tx).await {
                     break;
                 }
             }
@@ -217,9 +217,7 @@ async fn handle_terminal_event(
             apply_command(cmd, app, action_tx).await;
         }
         Some(Ok(Event::Paste(data))) => {
-            if !app.streaming {
-                apply_command(keys::UiCommand::Paste(data), app, action_tx).await;
-            }
+            apply_command(keys::UiCommand::Paste(data), app, action_tx).await;
         }
         Some(Ok(Event::Mouse(mouse))) => match mouse.kind {
             MouseEventKind::ScrollUp => app.scroll_up(),
@@ -315,8 +313,14 @@ async fn apply_command(cmd: keys::UiCommand, app: &mut App, action_tx: &mpsc::Se
         }
         UiCommand::Submit => {
             if !app.input.is_empty() {
-                let text = app.input.take();
-                handle_slash_or_send(text, app, action_tx).await;
+                if app.streaming {
+                    let text = app.input.take();
+                    let images = app.take_pending_images();
+                    app.enqueue_message(text, images);
+                } else {
+                    let text = app.input.take();
+                    handle_slash_or_send(text, app, action_tx).await;
+                }
             }
         }
         UiCommand::InsertNewline => app.input.push_char('\n'),
@@ -386,7 +390,11 @@ async fn handle_slash_or_send(text: String, app: &mut App, action_tx: &mpsc::Sen
     }
 }
 
-fn handle_agent_event(event: Option<AgentEvent>, app: &mut App) -> bool {
+async fn handle_agent_event(
+    event: Option<AgentEvent>,
+    app: &mut App,
+    action_tx: &mpsc::Sender<UserAction>,
+) -> bool {
     match event {
         Some(AgentEvent::ThinkingStarted) => app.set_thinking(true),
         Some(AgentEvent::ThinkingDelta(d)) => app.append_thinking_text(&d),
@@ -396,17 +404,28 @@ fn handle_agent_event(event: Option<AgentEvent>, app: &mut App) -> bool {
         Some(AgentEvent::ToolCompleted(r)) => app.add_tool_result(&r),
         Some(AgentEvent::TurnStats {
             eval_count,
+            eval_duration_ns,
             prompt_eval_count,
         }) => {
-            app.update_turn_stats(eval_count, prompt_eval_count);
+            app.update_turn_stats(eval_count, eval_duration_ns, prompt_eval_count);
         }
-        Some(AgentEvent::TurnDone) => app.finish_assistant_turn(),
+        Some(AgentEvent::TurnDone) => {
+            app.finish_assistant_turn();
+            if let Some((text, images)) = app.dequeue_message() {
+                app.start_assistant_turn();
+                if let Err(e) = action_tx.send(UserAction::SendMessage(text, images)).await {
+                    tracing::error!("failed to send queued message: {e}");
+                }
+            }
+        }
         Some(AgentEvent::Error(e)) => {
             app.finish_assistant_turn();
+            app.message_queue.clear();
             app.set_error(e);
         }
         Some(AgentEvent::LoopDetected) => {
             app.finish_assistant_turn();
+            app.message_queue.clear();
             app.set_error("Loop detected — model was repeating itself".into());
         }
         None => return false,

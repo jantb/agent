@@ -12,11 +12,7 @@ use crate::markdown::markdown_to_lines;
 use crate::types::{MessageKind, Role};
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    let input_height = if app.streaming {
-        1
-    } else {
-        app.input.line_count().min(5) as u16
-    };
+    let input_height = app.input.line_count().min(5) as u16;
     let [title_area, chat_area, input_area, status_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
@@ -69,7 +65,10 @@ fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     for (msg_idx, msg) in app.messages.iter().enumerate() {
         // Separator before each user message except the first message overall
-        if msg.role == Role::User && matches!(msg.kind, MessageKind::Text) && msg_idx != 0 {
+        if msg.role == Role::User
+            && matches!(msg.kind, MessageKind::Text | MessageKind::Queued)
+            && msg_idx != 0
+        {
             lines.push(Line::from(Span::styled(
                 separator.clone(),
                 Style::default().fg(Color::DarkGray),
@@ -108,6 +107,32 @@ fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                     lines.extend(markdown_to_lines(&msg.content, "  "));
                 }
             },
+            MessageKind::Queued => {
+                for (i, text_line) in msg.content.lines().enumerate() {
+                    if i == 0 {
+                        lines.push(Line::from(vec![
+                            Span::styled("❯ ", Style::default().fg(Color::DarkGray)),
+                            Span::styled(
+                                text_line.to_string(),
+                                Style::default()
+                                    .fg(Color::DarkGray)
+                                    .add_modifier(Modifier::ITALIC),
+                            ),
+                            Span::styled("  [queued]", Style::default().fg(Color::Indexed(243))),
+                        ]));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(
+                                text_line.to_string(),
+                                Style::default()
+                                    .fg(Color::DarkGray)
+                                    .add_modifier(Modifier::ITALIC),
+                            ),
+                        ]));
+                    }
+                }
+            }
             MessageKind::ToolCall {
                 name, arguments, ..
             } => {
@@ -246,70 +271,70 @@ fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 }
 
 fn draw_input(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    if app.streaming {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "❯ ",
-                Style::default().fg(Color::DarkGray),
-            ))),
-            area,
-        );
+    let img_count = app.pending_image_count();
+    let queue_tag = if app.queue_len() > 0 {
+        format!("[{}q] ", app.queue_len())
     } else {
-        let img_count = app.pending_image_count();
-        let base_prefix = if img_count > 0 {
-            format!("❯ [{img_count} img] ")
-        } else {
-            "❯ ".to_string()
-        };
-        let paste_tag = if let Some(pasted) = &app.input.pasted {
-            let n = pasted.lines().count();
-            format!("[{n} lines pasted] ")
-        } else {
-            String::new()
-        };
-        let first_line_prefix_len =
-            (base_prefix.chars().count() + paste_tag.chars().count()) as u16;
-        let continuation = "  ".to_string();
+        String::new()
+    };
+    let base_prefix = if img_count > 0 {
+        format!("❯ {queue_tag}[{img_count} img] ")
+    } else {
+        format!("❯ {queue_tag}")
+    };
+    let paste_tag = if let Some(pasted) = &app.input.pasted {
+        let n = pasted.lines().count();
+        format!("[{n} lines pasted] ")
+    } else {
+        String::new()
+    };
+    let first_line_prefix_len = (base_prefix.chars().count() + paste_tag.chars().count()) as u16;
+    let continuation = "  ".to_string();
 
-        let mut lines: Vec<Line> = Vec::new();
-        for (i, text_line) in app.input.text.split('\n').enumerate() {
-            if i == 0 {
-                let mut spans = vec![Span::styled(
-                    base_prefix.clone(),
-                    Style::default().fg(Color::Cyan),
-                )];
-                if !paste_tag.is_empty() {
-                    spans.push(Span::styled(
-                        paste_tag.clone(),
-                        Style::default().fg(Color::Yellow),
-                    ));
-                }
-                spans.push(Span::raw(text_line.to_string()));
-                lines.push(Line::from(spans));
-            } else {
-                lines.push(Line::from(vec![
-                    Span::styled(continuation.clone(), Style::default().fg(Color::Cyan)),
-                    Span::raw(text_line.to_string()),
-                ]));
+    let prompt_color = if app.streaming {
+        Color::DarkGray
+    } else {
+        Color::Cyan
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, text_line) in app.input.text.split('\n').enumerate() {
+        if i == 0 {
+            let mut spans = vec![Span::styled(
+                base_prefix.clone(),
+                Style::default().fg(prompt_color),
+            )];
+            if !paste_tag.is_empty() {
+                spans.push(Span::styled(
+                    paste_tag.clone(),
+                    Style::default().fg(Color::Yellow),
+                ));
             }
-        }
-        frame.render_widget(Paragraph::new(lines), area);
-        let text_before_cursor = &app.input.text[..app.input.cursor_pos];
-        let cursor_row = text_before_cursor.matches('\n').count() as u16;
-        let last_newline = text_before_cursor.rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let cursor_col = app.input.text[last_newline..app.input.cursor_pos]
-            .chars()
-            .count() as u16;
-        let row_prefix_len = if cursor_row == 0 {
-            first_line_prefix_len
+            spans.push(Span::raw(text_line.to_string()));
+            lines.push(Line::from(spans));
         } else {
-            continuation.chars().count() as u16
-        };
-        frame.set_cursor_position(Position::new(
-            area.x + row_prefix_len + cursor_col,
-            area.y + cursor_row,
-        ));
+            lines.push(Line::from(vec![
+                Span::styled(continuation.clone(), Style::default().fg(prompt_color)),
+                Span::raw(text_line.to_string()),
+            ]));
+        }
     }
+    frame.render_widget(Paragraph::new(lines), area);
+    let text_before_cursor = &app.input.text[..app.input.cursor_pos];
+    let cursor_row = text_before_cursor.matches('\n').count() as u16;
+    let last_newline = text_before_cursor.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let cursor_col = app.input.text[last_newline..app.input.cursor_pos]
+        .chars()
+        .count() as u16;
+    let row_prefix_len = if cursor_row == 0 {
+        first_line_prefix_len
+    } else {
+        continuation.chars().count() as u16
+    };
+    frame.set_cursor_position(Position::new(
+        area.x + row_prefix_len + cursor_col,
+        area.y + cursor_row,
+    ));
 }
 
 fn draw_autocomplete(frame: &mut Frame, ac: &crate::autocomplete::Autocomplete, input_area: Rect) {
@@ -380,8 +405,13 @@ fn draw_status(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             .tok_per_sec()
             .map(|t| format!(" ({:.0} tok/s)", t))
             .unwrap_or_default();
+        let queue = if app.queue_len() > 0 {
+            format!(" ({} queued)", app.queue_len())
+        } else {
+            String::new()
+        };
         Span::styled(
-            format!("{s} Streaming...{elapsed_str}{speed}"),
+            format!("{s} Streaming...{elapsed_str}{speed}{queue}"),
             Style::default().fg(Color::Cyan),
         )
     } else {

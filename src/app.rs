@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -25,11 +26,13 @@ pub struct App {
     pub tick: u64,
     pub turn_started_at: Option<Instant>,
     pub last_eval_count: Option<u64>,
+    pub last_eval_duration_ns: Option<u64>,
     pub last_prompt_eval_count: Option<u64>,
     pub context_window_size: Option<u64>,
     pub total_tokens_up: u64,
     pub total_tokens_down: u64,
     pub pending_images: Vec<String>, // base64-encoded images to attach to next message
+    pub message_queue: VecDeque<(String, Vec<String>)>,
     pub autocomplete: Option<Autocomplete>,
 }
 
@@ -55,11 +58,13 @@ impl App {
             tick: 0,
             turn_started_at: None,
             last_eval_count: None,
+            last_eval_duration_ns: None,
             last_prompt_eval_count: None,
             context_window_size: None,
             total_tokens_up: 0,
             total_tokens_down: 0,
             pending_images: Vec::new(),
+            message_queue: VecDeque::new(),
             autocomplete: None,
         }
     }
@@ -134,8 +139,14 @@ impl App {
         self.tick = self.tick.wrapping_add(1);
     }
 
-    pub fn update_turn_stats(&mut self, eval_count: u64, prompt_eval_count: u64) {
+    pub fn update_turn_stats(
+        &mut self,
+        eval_count: u64,
+        eval_duration_ns: u64,
+        prompt_eval_count: u64,
+    ) {
         self.last_eval_count = Some(eval_count);
+        self.last_eval_duration_ns = Some(eval_duration_ns);
         self.last_prompt_eval_count = Some(prompt_eval_count);
         self.total_tokens_down += eval_count;
         self.total_tokens_up += prompt_eval_count;
@@ -228,9 +239,9 @@ impl App {
 
     pub fn tok_per_sec(&self) -> Option<f64> {
         let eval = self.last_eval_count?;
-        let elapsed = self.elapsed_secs()?;
-        if elapsed > 0.0 && eval > 0 {
-            Some(eval as f64 / elapsed)
+        let dur_ns = self.last_eval_duration_ns?;
+        if dur_ns > 0 && eval > 0 {
+            Some(eval as f64 / (dur_ns as f64 / 1_000_000_000.0))
         } else {
             None
         }
@@ -246,6 +257,33 @@ impl App {
 
     pub fn pending_image_count(&self) -> usize {
         self.pending_images.len()
+    }
+
+    pub fn enqueue_message(&mut self, text: String, images: Vec<String>) {
+        self.messages.push(ChatMessage {
+            role: Role::User,
+            content: text.clone(),
+            kind: MessageKind::Queued,
+        });
+        self.message_queue.push_back((text, images));
+        if self.auto_scroll {
+            self.scroll_offset = 0;
+        }
+    }
+
+    pub fn dequeue_message(&mut self) -> Option<(String, Vec<String>)> {
+        let item = self.message_queue.pop_front()?;
+        for msg in &mut self.messages {
+            if msg.role == Role::User && matches!(msg.kind, MessageKind::Queued) {
+                msg.kind = MessageKind::Text;
+                break;
+            }
+        }
+        Some(item)
+    }
+
+    pub fn queue_len(&self) -> usize {
+        self.message_queue.len()
     }
 
     pub fn help_text() -> &'static str {
@@ -277,8 +315,10 @@ impl App {
 
     pub fn clear_messages(&mut self) {
         self.messages.clear();
+        self.message_queue.clear();
         self.error_message = None;
         self.last_eval_count = None;
+        self.last_eval_duration_ns = None;
         self.last_prompt_eval_count = None;
     }
 }
@@ -482,8 +522,9 @@ mod tests {
     #[test]
     fn update_turn_stats_stores_values() {
         let mut app = make_app();
-        app.update_turn_stats(100, 200);
+        app.update_turn_stats(100, 2_000_000_000, 200);
         assert_eq!(app.last_eval_count, Some(100));
+        assert_eq!(app.last_eval_duration_ns, Some(2_000_000_000));
         assert_eq!(app.last_prompt_eval_count, Some(200));
     }
 
@@ -614,11 +655,12 @@ mod tests {
         let mut app = make_app();
         app.add_user_message("hello".into());
         app.set_error("oops".into());
-        app.update_turn_stats(10, 20);
+        app.update_turn_stats(10, 500_000_000, 20);
         app.clear_messages();
         assert!(app.messages.is_empty());
         assert!(app.error_message.is_none());
         assert!(app.last_eval_count.is_none());
+        assert!(app.last_eval_duration_ns.is_none());
         assert!(app.last_prompt_eval_count.is_none());
     }
 
@@ -649,10 +691,48 @@ mod tests {
     fn tok_per_sec_some_when_streaming() {
         let mut app = make_app();
         app.start_assistant_turn();
-        app.update_turn_stats(100, 50);
-        // Can't easily test exact value since elapsed depends on time
-        // Just verify it returns Some
+        // 100 tokens in 2 seconds = 50 tok/s
+        app.update_turn_stats(100, 2_000_000_000, 50);
         assert!(app.tok_per_sec().is_some());
+    }
+
+    #[test]
+    fn tok_per_sec_uses_ollama_duration() {
+        let mut app = make_app();
+        // 100 tokens in 2 seconds = 50 tok/s
+        app.update_turn_stats(100, 2_000_000_000, 50);
+        let rate = app.tok_per_sec().unwrap();
+        assert!((rate - 50.0).abs() < 0.01, "expected ~50, got {rate}");
+    }
+
+    #[test]
+    fn tok_per_sec_stable_over_time() {
+        let mut app = make_app();
+        app.start_assistant_turn();
+        app.update_turn_stats(1000, 1_000_000_000, 50);
+        let rate1 = app.tok_per_sec().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let rate2 = app.tok_per_sec().unwrap();
+        assert!(
+            (rate1 - rate2).abs() < 0.01,
+            "tok/s drifted: {rate1:.0} -> {rate2:.0}"
+        );
+    }
+
+    #[test]
+    fn tok_per_sec_none_without_duration() {
+        let mut app = make_app();
+        // zero duration → None
+        app.update_turn_stats(100, 0, 50);
+        assert!(app.tok_per_sec().is_none());
+    }
+
+    #[test]
+    fn tok_per_sec_none_before_stats() {
+        let mut app = make_app();
+        app.start_assistant_turn();
+        // No update_turn_stats called yet
+        assert!(app.tok_per_sec().is_none());
     }
 
     #[test]
@@ -724,8 +804,8 @@ mod tests {
     #[test]
     fn update_turn_stats_accumulates_across_turns() {
         let mut app = make_app();
-        app.update_turn_stats(100, 200);
-        app.update_turn_stats(50, 75);
+        app.update_turn_stats(100, 1_000_000_000, 200);
+        app.update_turn_stats(50, 500_000_000, 75);
         assert_eq!(app.total_tokens_down, 150);
         assert_eq!(app.total_tokens_up, 275);
     }
@@ -733,7 +813,7 @@ mod tests {
     #[test]
     fn clear_messages_does_not_reset_cumulative_tokens() {
         let mut app = make_app();
-        app.update_turn_stats(100, 200);
+        app.update_turn_stats(100, 1_000_000_000, 200);
         app.clear_messages();
         assert_eq!(app.total_tokens_down, 100);
         assert_eq!(app.total_tokens_up, 200);
@@ -786,5 +866,86 @@ mod tests {
         assert_eq!(app.messages.len(), 1);
         assert!(matches!(app.messages[0].kind, MessageKind::Thinking));
         assert!(!app.streaming);
+    }
+
+    // --- message queue ---
+    #[test]
+    fn enqueue_message_adds_to_queue_and_messages() {
+        let mut app = make_app();
+        app.enqueue_message("queued msg".into(), vec![]);
+        assert_eq!(app.queue_len(), 1);
+        assert_eq!(app.messages.len(), 1);
+        assert_eq!(app.messages[0].content, "queued msg");
+        assert!(matches!(app.messages[0].kind, MessageKind::Queued));
+        assert!(matches!(app.messages[0].role, Role::User));
+    }
+
+    #[test]
+    fn enqueue_multiple_preserves_order() {
+        let mut app = make_app();
+        app.enqueue_message("first".into(), vec![]);
+        app.enqueue_message("second".into(), vec![]);
+        app.enqueue_message("third".into(), vec![]);
+        assert_eq!(app.queue_len(), 3);
+        assert_eq!(app.messages.len(), 3);
+    }
+
+    #[test]
+    fn dequeue_returns_fifo_order() {
+        let mut app = make_app();
+        app.enqueue_message("first".into(), vec!["img1".into()]);
+        app.enqueue_message("second".into(), vec![]);
+        let (text, images) = app.dequeue_message().unwrap();
+        assert_eq!(text, "first");
+        assert_eq!(images, vec!["img1"]);
+        assert_eq!(app.queue_len(), 1);
+        let (text, _) = app.dequeue_message().unwrap();
+        assert_eq!(text, "second");
+        assert_eq!(app.queue_len(), 0);
+    }
+
+    #[test]
+    fn dequeue_promotes_queued_to_text() {
+        let mut app = make_app();
+        app.enqueue_message("msg".into(), vec![]);
+        assert!(matches!(app.messages[0].kind, MessageKind::Queued));
+        app.dequeue_message();
+        assert!(matches!(app.messages[0].kind, MessageKind::Text));
+    }
+
+    #[test]
+    fn dequeue_empty_returns_none() {
+        let mut app = make_app();
+        assert!(app.dequeue_message().is_none());
+    }
+
+    #[test]
+    fn clear_messages_clears_queue() {
+        let mut app = make_app();
+        app.enqueue_message("msg".into(), vec![]);
+        app.clear_messages();
+        assert_eq!(app.queue_len(), 0);
+        assert!(app.messages.is_empty());
+    }
+
+    #[test]
+    fn enqueue_with_images() {
+        let mut app = make_app();
+        app.enqueue_message("with img".into(), vec!["base64data".into()]);
+        let (text, images) = app.dequeue_message().unwrap();
+        assert_eq!(text, "with img");
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0], "base64data");
+    }
+
+    #[test]
+    fn dequeue_promotes_only_first_queued() {
+        let mut app = make_app();
+        app.enqueue_message("first".into(), vec![]);
+        app.enqueue_message("second".into(), vec![]);
+        app.dequeue_message();
+        // First should be promoted to Text, second should still be Queued
+        assert!(matches!(app.messages[0].kind, MessageKind::Text));
+        assert!(matches!(app.messages[1].kind, MessageKind::Queued));
     }
 }

@@ -32,18 +32,17 @@ pub fn map_key(key: KeyEvent, streaming: bool) -> UiCommand {
     match (key.code, key.modifiers) {
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => UiCommand::Quit,
         (KeyCode::Esc, _) => UiCommand::Cancel,
-        // When streaming, ignore all input keys
-        (KeyCode::Char('w'), KeyModifiers::CONTROL) if !streaming => UiCommand::DeleteWord,
-        (KeyCode::Char('u'), KeyModifiers::CONTROL) if !streaming => UiCommand::ClearLine,
-        (KeyCode::Char('a'), KeyModifiers::CONTROL) if !streaming => UiCommand::MoveToStart,
-        (KeyCode::Char('e'), KeyModifiers::CONTROL) if !streaming => UiCommand::MoveToEnd,
-        (KeyCode::Char('l'), KeyModifiers::CONTROL) if !streaming => UiCommand::ClearHistory,
-        (KeyCode::Char('v'), KeyModifiers::CONTROL) if !streaming => UiCommand::PasteImage,
-        (KeyCode::Enter, KeyModifiers::SHIFT) if !streaming => UiCommand::InsertNewline,
-        (KeyCode::Enter, KeyModifiers::NONE) if !streaming => UiCommand::Submit,
-        (KeyCode::Backspace, _) if !streaming => UiCommand::Backspace,
-        (KeyCode::Left, _) if !streaming => UiCommand::MoveLeft,
-        (KeyCode::Right, _) if !streaming => UiCommand::MoveRight,
+        (KeyCode::Char('w'), KeyModifiers::CONTROL) => UiCommand::DeleteWord,
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) => UiCommand::ClearLine,
+        (KeyCode::Char('a'), KeyModifiers::CONTROL) => UiCommand::MoveToStart,
+        (KeyCode::Char('e'), KeyModifiers::CONTROL) => UiCommand::MoveToEnd,
+        (KeyCode::Char('l'), KeyModifiers::CONTROL) => UiCommand::ClearHistory,
+        (KeyCode::Char('v'), KeyModifiers::CONTROL) => UiCommand::PasteImage,
+        (KeyCode::Enter, KeyModifiers::SHIFT) => UiCommand::InsertNewline,
+        (KeyCode::Enter, KeyModifiers::NONE) => UiCommand::Submit,
+        (KeyCode::Backspace, _) => UiCommand::Backspace,
+        (KeyCode::Left, _) => UiCommand::MoveLeft,
+        (KeyCode::Right, _) => UiCommand::MoveRight,
         (KeyCode::Up, KeyModifiers::SHIFT) => UiCommand::ScrollUp,
         (KeyCode::Down, KeyModifiers::SHIFT) => UiCommand::ScrollDown,
         (KeyCode::Up, _) if !streaming => UiCommand::HistoryPrev,
@@ -52,7 +51,7 @@ pub fn map_key(key: KeyEvent, streaming: bool) -> UiCommand {
         (KeyCode::PageDown, _) => UiCommand::PageDown,
         (KeyCode::End, _) => UiCommand::ScrollToBottom,
         (KeyCode::Tab, _) if !streaming => UiCommand::Tab,
-        (KeyCode::Char(c), _) if !streaming => UiCommand::InsertChar(c),
+        (KeyCode::Char(c), _) => UiCommand::InsertChar(c),
         _ => UiCommand::Ignore,
     }
 }
@@ -107,7 +106,7 @@ mod tests {
     fn enter_ignored_when_streaming() {
         assert_eq!(
             map_key(key(KeyCode::Enter, KeyModifiers::NONE), true),
-            UiCommand::Ignore
+            UiCommand::Submit
         );
     }
 
@@ -123,7 +122,7 @@ mod tests {
     fn char_input_ignored_when_streaming() {
         assert_eq!(
             map_key(key(KeyCode::Char('a'), KeyModifiers::NONE), true),
-            UiCommand::Ignore
+            UiCommand::InsertChar('a')
         );
     }
 
@@ -151,11 +150,11 @@ mod tests {
     fn ctrl_shortcuts_ignored_when_streaming() {
         assert_eq!(
             map_key(key(KeyCode::Char('w'), KeyModifiers::CONTROL), true),
-            UiCommand::Ignore
+            UiCommand::DeleteWord
         );
         assert_eq!(
             map_key(key(KeyCode::Char('u'), KeyModifiers::CONTROL), true),
-            UiCommand::Ignore
+            UiCommand::ClearLine
         );
     }
 
@@ -163,7 +162,7 @@ mod tests {
     fn backspace_ignored_when_streaming() {
         assert_eq!(
             map_key(key(KeyCode::Backspace, KeyModifiers::NONE), true),
-            UiCommand::Ignore
+            UiCommand::Backspace
         );
     }
 }
