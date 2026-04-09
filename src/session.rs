@@ -37,6 +37,7 @@ pub enum SessionMessage {
     Thinking { content: String },
     #[serde(rename = "tool_call")]
     ToolCall {
+        #[serde(default)]
         id: String,
         name: String,
         arguments: String,
@@ -471,6 +472,29 @@ mod tests {
         // system + user + assistant = 3; thinking skipped
         assert_eq!(history.len(), 3);
         assert!(history.iter().all(|m| m.role != Role::Tool));
+    }
+
+    #[test]
+    fn load_tolerates_missing_tool_call_id() {
+        let dir = tmp();
+        let json = r#"{
+            "version": 1,
+            "model": "test",
+            "working_dir": "/tmp",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "messages": [
+                {"kind": "tool_call", "name": "list_dir", "arguments": "{\"path\":\".\"}" }
+            ]
+        }"#;
+        let session_dir = dir.path().join(".agent");
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(session_dir.join("session.json"), json).unwrap();
+        let loaded = Session::load(dir.path()).unwrap().unwrap();
+        assert!(matches!(
+            &loaded.messages[0],
+            SessionMessage::ToolCall { id, name, .. } if id.is_empty() && name == "list_dir"
+        ));
     }
 
     #[test]
