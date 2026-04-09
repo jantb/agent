@@ -1,0 +1,4 @@
+# TUI test: Kotlin code generation + syntax highlighting
+# Run WITHOUT --headless to verify TUI rendering
+Create a Kotlin file called Hello.kt with a main function that prints "Hello, World!" and a data class Person(name: String, age: Int). Keep it compact.
+Read Hello.kt

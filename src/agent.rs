@@ -20,6 +20,12 @@ You are a local AI agent in a terminal TUI. Working directory: {dir}
 All file tools are sandboxed to this directory. You also have tools from any connected MCP servers.
 Tool schemas are provided via the API — do not guess parameters, refer to the schemas.
 
+## CRITICAL: Always use tools for file operations
+
+NEVER show file content in your response as a code block when asked to create or edit a file. \
+ALWAYS use the write_file or edit_file tool. If the user asks you to create a file, call write_file immediately. \
+Do not display the code and then say you'll create it — create it first, then briefly confirm.
+
 ## Core workflow
 
 1. **Understand first.** Read relevant files before making changes. Never guess at file contents.
@@ -301,6 +307,26 @@ impl AgentTask {
                                     self.emit(AgentEvent::LoopDetected).await;
                                     self.emit(AgentEvent::TurnDone).await;
                                     break 'turn;
+                                }
+                                if content.trim().is_empty() {
+                                    if round >= 5 {
+                                        warn!("empty text after {round} retries, giving up");
+                                        self.emit(AgentEvent::Error(
+                                            "Model returned only thinking content with no visible response after multiple retries".into()
+                                        )).await;
+                                        break 'turn;
+                                    } else if round >= 3 {
+                                        warn!("empty text after {round} retries, injecting nudge");
+                                        self.session.append_message(SessionMessage::Text {
+                                            role: Role::User,
+                                            content: "Your previous responses contained only thinking with no visible text. You MUST respond with either a tool call or visible text. Do not only think — take action.".into(),
+                                            images: vec![],
+                                        });
+                                        self.save_or_emit_error().await;
+                                    } else {
+                                        debug!("empty text turn (thinking-only), retrying");
+                                    }
+                                    continue 'turn;
                                 }
                                 match self
                                     .handle_loop_check(

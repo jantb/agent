@@ -1,0 +1,5 @@
+# Complex multi-step task
+Create a Python file called fib.py that defines a function fibonacci(n) returning the nth fibonacci number, then a main block that prints fibonacci(10)
+Read fib.py to verify it looks correct
+List the current directory to see what files exist
+Search for the word "fibonacci" in all files in the current directory

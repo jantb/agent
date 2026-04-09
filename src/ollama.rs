@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 
 use tracing::{debug, trace, warn};
 
-use crate::types::{AgentEvent, Message, ToolCall, ToolDefinition, TurnOutcome};
+use crate::types::{AgentEvent, Message, Role, ToolCall, ToolDefinition, TurnOutcome};
 
 static CALL_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -106,6 +106,12 @@ pub struct FilterOutput {
 
 pub struct ThinkTagFilter {
     state: FilterState,
+}
+
+impl Default for ThinkTagFilter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ThinkTagFilter {
@@ -217,31 +223,43 @@ impl OllamaClient {
     }
 
     fn messages_to_json(&self, history: &[Message]) -> serde_json::Value {
-        let msgs: Vec<serde_json::Value> = history
-            .iter()
-            .map(|m| {
-                let role = serde_json::to_value(&m.role).unwrap_or(json!("user"));
-                let mut msg = json!({ "role": role, "content": m.content });
-                if !m.images.is_empty() {
-                    msg["images"] = json!(m.images);
-                }
-                if !m.tool_calls.is_empty() {
-                    msg["tool_calls"] = json!(m
-                        .tool_calls
-                        .iter()
-                        .map(|tc| {
-                            json!({
-                                "function": {
-                                    "name": tc.name,
-                                    "arguments": tc.arguments
-                                }
-                            })
+        // Workaround: Ollama suppresses gemma4 thinking when a system role message
+        // is combined with tools. We extract the system prompt and prepend it to the
+        // first user message as <system>...</system> instead.
+        let mut system_content: Option<&str> = None;
+        let mut msgs: Vec<serde_json::Value> = Vec::with_capacity(history.len());
+
+        for m in history {
+            if m.role == Role::System {
+                system_content = Some(&m.content);
+                continue;
+            }
+            let role = serde_json::to_value(&m.role).unwrap_or(json!("user"));
+            let content = if let Some(sys) = system_content.take() {
+                format!("<system>\n{sys}\n</system>\n\n{}", m.content)
+            } else {
+                m.content.clone()
+            };
+            let mut msg = json!({ "role": role, "content": content });
+            if !m.images.is_empty() {
+                msg["images"] = json!(m.images);
+            }
+            if !m.tool_calls.is_empty() {
+                msg["tool_calls"] = json!(m
+                    .tool_calls
+                    .iter()
+                    .map(|tc| {
+                        json!({
+                            "function": {
+                                "name": tc.name,
+                                "arguments": tc.arguments
+                            }
                         })
-                        .collect::<Vec<_>>());
-                }
-                msg
-            })
-            .collect();
+                    })
+                    .collect::<Vec<_>>());
+            }
+            msgs.push(msg);
+        }
 
         json!(msgs)
     }
@@ -279,7 +297,8 @@ impl OllamaClient {
             "options": {
                 "temperature": 1.0,
                 "top_p": 0.95,
-                "top_k": 64
+                "top_k": 64,
+                "num_predict": 8192
             }
         });
 
@@ -411,7 +430,7 @@ impl OllamaClient {
             }
         }
 
-        // Flush any buffered tag-filter content (Bug 1)
+        // Flush partial tag content buffered by the filter (e.g. incomplete tags at stream end)
         let flushed = tag_filter.flush();
         if !flushed.thinking.is_empty() {
             if !in_thinking {
@@ -425,7 +444,7 @@ impl OllamaClient {
             let _ = tx.send(AgentEvent::TextDelta(flushed.text)).await;
         }
 
-        // Bug 2: clean up in_thinking if stream ended without done=true
+        // Close any open thinking block (stream may end before done=true)
         if in_thinking {
             let _ = tx.send(AgentEvent::ThinkingDone).await;
         }
@@ -516,13 +535,21 @@ mod tests {
     use crate::types::Role;
 
     #[test]
-    fn messages_to_json_no_think_prefix() {
+    fn messages_to_json_system_merged_into_first_user() {
         let http = reqwest::Client::new();
         let client = OllamaClient::new("http://localhost:11434", "gemma4:26b", http);
-        let history = vec![Message::new(Role::System, "You are helpful.".into())];
+        let history = vec![
+            Message::new(Role::System, "You are helpful.".into()),
+            Message::new(Role::User, "hello".into()),
+        ];
         let json = client.messages_to_json(&history);
+        // System message is merged into the first user message
+        assert_eq!(json.as_array().unwrap().len(), 1);
+        assert_eq!(json[0]["role"], "user");
         let content = json[0]["content"].as_str().unwrap();
-        assert!(!content.contains("<|think|>"));
+        assert!(content.contains("<system>"));
+        assert!(content.contains("You are helpful."));
+        assert!(content.contains("hello"));
     }
 
     #[test]

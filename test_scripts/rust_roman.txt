@@ -1,0 +1,4 @@
+# Rust project: roman numeral to integer converter
+# Tests thinking display, code highlighting, multi-step file creation
+Create a Rust file called roman.rs that implements a function roman_to_int(s: &str) -> i32 that converts a roman numeral string to an integer. Include a main function with test cases that prints results for "III", "IV", "IX", "XLII", "MCMXCIV". Make the code idiomatic and compact.
+Read roman.rs to verify it looks correct

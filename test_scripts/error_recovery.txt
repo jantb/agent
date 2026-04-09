@@ -1,0 +1,6 @@
+# Error recovery: handle missing files and tool errors gracefully
+Read the file nonexistent_file_12345.txt
+@wait 1
+# Should have recovered from the error above
+Now create test_recovery.txt with the text "recovered successfully"
+Read test_recovery.txt to confirm it exists

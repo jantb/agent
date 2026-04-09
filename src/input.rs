@@ -7,6 +7,12 @@ pub struct InputState {
     pub pasted: Option<String>,
 }
 
+impl Default for InputState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InputState {
     pub fn new() -> Self {
         Self {

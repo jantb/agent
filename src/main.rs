@@ -1,19 +1,3 @@
-mod agent;
-mod app;
-mod autocomplete;
-mod config;
-mod highlight;
-mod input;
-mod keys;
-mod markdown;
-mod mcp;
-mod memory;
-mod ollama;
-mod session;
-mod tools;
-mod types;
-mod ui;
-
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -26,24 +10,33 @@ use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
-
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use agent::{system_prompt, AgentTask, AgentTaskConfig, UserAction};
-use app::App;
-use mcp::McpRegistry;
-use ollama::OllamaClient;
-use session::{ensure_gitignore, Session};
-use tools::built_in_tool_definitions;
-use types::{AgentEvent, ChatMessage, MessageKind};
+use agent::agent::{system_prompt, AgentTask, AgentTaskConfig, UserAction};
+use agent::app::App;
+use agent::autocomplete;
+use agent::config;
+use agent::keys;
+use agent::mcp::McpRegistry;
+use agent::memory;
+use agent::ollama::OllamaClient;
+use agent::script::{self, ScriptCommand, StepReport, StepStatus, TestReport};
+use agent::session::{ensure_gitignore, Session};
+use agent::tools::built_in_tool_definitions;
+use agent::types::{AgentEvent, ChatMessage, MessageKind};
+use agent::ui;
 
 #[derive(Parser)]
 #[command(name = "agent", about = "Local AI agent TUI powered by Ollama")]
 struct Cli {
-    #[arg(long, default_value = "gemma4:26b")]
+    #[arg(long, default_value = "gemma4:26b", hide = true)]
     model: String,
     #[arg(long, default_value = "http://localhost:11434")]
     ollama_url: String,
+    #[arg(long)]
+    script: Option<std::path::PathBuf>,
+    #[arg(long, default_value = "false")]
+    headless: bool,
 }
 
 struct TerminalGuard;
@@ -69,6 +62,9 @@ async fn main() -> anyhow::Result<()> {
     if let Err(e) = std::fs::create_dir_all(&log_dir) {
         eprintln!("failed to create log dir: {e}");
     }
+    // Clear old log on startup
+    let _ = std::fs::remove_file(log_dir.join("agent.log"));
+    let _ = std::fs::remove_file(log_dir.join("test_report.json"));
     let file_appender = tracing_appender::rolling::never(&log_dir, "agent.log");
     let (non_blocking, _log_guard) = tracing_appender::non_blocking(file_appender);
     tracing_subscriber::registry()
@@ -130,33 +126,18 @@ async fn main() -> anyhow::Result<()> {
 
     ensure_gitignore(&working_dir)?;
 
-    // Build App
-    let mut app = App::new(cli.model.clone(), working_dir.clone());
-    app.context_window_size = match ollama.fetch_context_window().await {
+    // Capture display values before moving into agent task
+    let mcp_connected = mcp_registry.connected_servers().await;
+    let mcp_failed = mcp_registry.failed_servers().await;
+    let context_window = match ollama.fetch_context_window().await {
         Ok(Some(n)) => Some(n),
         Ok(None) | Err(_) => Some(131_072),
     };
-    app.mcp_connected = mcp_registry.connected_servers().await;
-    app.mcp_failed = mcp_registry.failed_servers().await;
-    app.resumed_session = resumed;
-
-    // Restore messages from session into app display
-    for sm in &session.messages {
-        let chat_msg: ChatMessage = sm.clone().into();
-        app.messages.push(chat_msg);
-    }
-
-    // Setup terminal
-    terminal::enable_raw_mode()?;
-    crossterm::execute!(
-        std::io::stdout(),
-        EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture,
-        crossterm::event::EnableBracketedPaste
-    )?;
-    let _guard = TerminalGuard;
-    let backend = CrosstermBackend::new(std::io::stdout());
-    let mut terminal = ratatui::Terminal::new(backend)?;
+    let session_messages: Vec<ChatMessage> = session
+        .messages
+        .iter()
+        .map(|sm| sm.clone().into())
+        .collect();
 
     // Channels
     let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
@@ -175,8 +156,182 @@ async fn main() -> anyhow::Result<()> {
     });
     tokio::spawn(async move { agent_task.run().await });
 
+    // --- Script: headless mode ---
+    if let Some(script_path) = &cli.script {
+        if cli.headless {
+            let commands = script::parse_script(script_path)?;
+            let mut report = TestReport::new(&cli.model);
+
+            for cmd in &commands {
+                match cmd {
+                    ScriptCommand::Send(text) => {
+                        let step_start = std::time::Instant::now();
+
+                        action_tx
+                            .send(UserAction::SendMessage(text.clone(), vec![]))
+                            .await
+                            .ok();
+                        println!("[send] {text}");
+
+                        let result = tokio::time::timeout(
+                            Duration::from_secs(120),
+                            async {
+                                let mut log: Vec<String> = Vec::new();
+                                loop {
+                                    match event_rx.recv().await {
+                                        Some(AgentEvent::ThinkingStarted) => {
+                                            println!("[event] ThinkingStarted");
+                                            log.push("ThinkingStarted".into());
+                                        }
+                                        Some(AgentEvent::ThinkingDelta(d)) => {
+                                            print!("[think] {d}");
+                                            log.push(format!("ThinkingDelta: {d}"));
+                                        }
+                                        Some(AgentEvent::ThinkingDone) => {
+                                            println!("\n[event] ThinkingDone");
+                                            log.push("ThinkingDone".into());
+                                        }
+                                        Some(AgentEvent::TextDelta(d)) => {
+                                            print!("{d}");
+                                            log.push(format!("TextDelta: {d}"));
+                                        }
+                                        Some(AgentEvent::ToolRequested(c)) => {
+                                            println!("\n[tool] {}({})", c.name, c.arguments);
+                                            log.push(format!("ToolRequested: {}({})", c.name, c.arguments));
+                                        }
+                                        Some(AgentEvent::ToolCompleted(r)) => {
+                                            println!("[tool_done] {}", r.call_id);
+                                            log.push(format!("ToolCompleted: {}", r.call_id));
+                                        }
+                                        Some(AgentEvent::TurnStats { eval_count, eval_duration_ns, prompt_eval_count }) => {
+                                            log.push(format!("TurnStats: eval={eval_count} prompt={prompt_eval_count} ns={eval_duration_ns}"));
+                                        }
+                                        Some(AgentEvent::TurnDone) => {
+                                            println!("\n[done]");
+                                            log.push("TurnDone".into());
+                                            return (StepStatus::Completed, log);
+                                        }
+                                        Some(AgentEvent::Error(e)) => {
+                                            println!("\n[error] {e}");
+                                            log.push(format!("Error: {e}"));
+                                            return (StepStatus::Failed(e), log);
+                                        }
+                                        Some(AgentEvent::LoopDetected) => {
+                                            let msg = "Loop detected";
+                                            println!("\n[error] {msg}");
+                                            log.push(format!("Error: {msg}"));
+                                            return (StepStatus::Failed(msg.into()), log);
+                                        }
+                                        None => {
+                                            return (StepStatus::Failed("channel closed".into()), log);
+                                        }
+                                    }
+                                }
+                            },
+                        )
+                        .await;
+
+                        let (status, events_log) = match result {
+                            Ok(pair) => pair,
+                            Err(_) => {
+                                println!("[timeout] step exceeded 120s");
+                                (StepStatus::TimedOut, vec![])
+                            }
+                        };
+
+                        report.add_step(StepReport {
+                            command: text.clone(),
+                            events: events_log,
+                            duration_ms: step_start.elapsed().as_millis() as u64,
+                            status,
+                        });
+                    }
+                    ScriptCommand::Wait(dur) => {
+                        println!("[wait] {}ms", dur.as_millis());
+                        tokio::time::sleep(*dur).await;
+                    }
+                    ScriptCommand::ExpectFile { .. } | ScriptCommand::ExpectNoFile(_) => {
+                        if let Some(result) = script::run_assertion(cmd, &working_dir) {
+                            let pass_str = if result.pass { "PASS" } else { "FAIL" };
+                            println!("[assert] {pass_str} {} {}", result.assert_type, result.path);
+                            report.add_assertion(result);
+                        }
+                    }
+                }
+            }
+
+            action_tx.send(UserAction::Quit).await.ok();
+
+            let report_path = log_dir.join("test_report.json");
+            report.write_to_file(&report_path)?;
+            println!("[report] written to {}", report_path.display());
+            report.print_summary();
+
+            return Ok(());
+        }
+    }
+
+    // --- Build App (TUI modes) ---
+    let mut app = App::new(cli.model.clone(), working_dir.clone());
+    app.context_window_size = context_window;
+    app.mcp_connected = mcp_connected;
+    app.mcp_failed = mcp_failed;
+    app.resumed_session = resumed;
+
+    for chat_msg in session_messages {
+        app.messages.push(chat_msg);
+    }
+
+    // Setup terminal
+    terminal::enable_raw_mode()?;
+    crossterm::execute!(
+        std::io::stdout(),
+        EnterAlternateScreen,
+        crossterm::event::EnableMouseCapture,
+        crossterm::event::EnableBracketedPaste
+    )?;
+    let _guard = TerminalGuard;
+    let backend = CrosstermBackend::new(std::io::stdout());
+    let mut terminal = ratatui::Terminal::new(backend)?;
+
     let mut reader = EventStream::new();
     let mut tick = interval(Duration::from_millis(50));
+
+    // Script TUI mode: feed commands via channel, with turn-done sync
+    let (script_tx, mut script_rx) = mpsc::channel::<String>(8);
+    let script_turn_done = Arc::new(tokio::sync::Notify::new());
+    let script_turn_done_writer = script_turn_done.clone();
+    if let Some(script_path) = cli.script.clone() {
+        let action_tx_clone = action_tx.clone();
+        let turn_done = script_turn_done.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let commands = match script::parse_script(&script_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!("script parse error: {e}");
+                    return;
+                }
+            };
+            for cmd in commands {
+                match cmd {
+                    ScriptCommand::Send(text) => {
+                        script_tx.send(text).await.ok();
+                        // Wait for turn to complete before sending next
+                        turn_done.notified().await;
+                    }
+                    ScriptCommand::Wait(dur) => {
+                        tokio::time::sleep(dur).await;
+                    }
+                    ScriptCommand::ExpectFile { .. } | ScriptCommand::ExpectNoFile(_) => {
+                        tracing::info!("script assertion skipped in TUI mode");
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            action_tx_clone.send(UserAction::Quit).await.ok();
+        });
+    }
 
     // Event loop
     loop {
@@ -193,6 +348,17 @@ async fn main() -> anyhow::Result<()> {
             agent_event = event_rx.recv() => {
                 if !handle_agent_event(agent_event, &mut app, &action_tx).await {
                     break;
+                }
+                // Notify script task when turn ends
+                if !app.streaming {
+                    script_turn_done_writer.notify_one();
+                }
+            }
+            script_msg = script_rx.recv() => {
+                if let Some(text) = script_msg {
+                    app.add_user_message(text.clone());
+                    app.start_assistant_turn();
+                    action_tx.send(UserAction::SendMessage(text, vec![])).await.ok();
                 }
             }
             _ = tick.tick() => {}
@@ -376,7 +542,7 @@ async fn handle_slash_or_send(text: String, app: &mut App, action_tx: &mpsc::Sen
         }
     } else if text.trim() == "/help" {
         app.messages.push(ChatMessage {
-            role: types::Role::Assistant,
+            role: agent::types::Role::Assistant,
             content: App::help_text().to_string(),
             kind: MessageKind::Text,
         });

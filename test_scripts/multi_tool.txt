@@ -1,0 +1,5 @@
+# Multi-tool test: create, read, edit, verify
+Create a file called numbers.txt with the numbers 1 through 5, one per line
+Read numbers.txt
+Edit numbers.txt: change the line "3" to "THREE"
+Read numbers.txt again to verify the edit worked

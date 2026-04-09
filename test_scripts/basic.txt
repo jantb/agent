@@ -1,0 +1,4 @@
+# Basic smoke test - simple text + file creation
+What is 2+2? Answer in one sentence.
+Create a file called hello.txt with exactly this content: Hello, World!
+Read the file hello.txt and tell me what it contains.

@@ -1,0 +1,5 @@
+# Thinking verification: prompts that should trigger visible reasoning
+# Run from a clean working directory to avoid session history interference
+If I have 3 apples and give away 1, then buy 5 more, how many do I have? Think through it step by step before answering.
+Create a file called answer.txt with just the number
+@expect_file answer.txt 7
