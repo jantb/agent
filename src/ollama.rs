@@ -298,7 +298,8 @@ impl OllamaClient {
                 "temperature": 1.0,
                 "top_p": 0.95,
                 "top_k": 64,
-                "num_predict": 8192
+                "num_predict": 8192,
+                "num_ctx": 131_072
             }
         });
 
