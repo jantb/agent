@@ -1,0 +1,8 @@
+# Test that the orchestrator decomposes a multi-part task into separate subtasks.
+# Two clearly distinct file writes that should be delegated independently.
+Do two things: (1) Write 'alpha' to file multi_a.txt. (2) Write 'beta' to file multi_b.txt. These are independent tasks.
+@wait 60
+@expect_file multi_a.txt alpha
+@expect_file multi_b.txt beta
+@expect_event SubtaskEnter
+@expect_event SubtaskExit

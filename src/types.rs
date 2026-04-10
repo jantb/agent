@@ -81,6 +81,28 @@ pub enum AgentEvent {
     TurnDone,
     Error(String),
     LoopDetected,
+    SubtaskEnter {
+        depth: usize,
+        label: String,
+    },
+    SubtaskExit {
+        depth: usize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeInfo {
+    pub depth: usize,
+    pub label: String,
+    pub status: NodeStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeStatus {
+    Active,
+    Suspended,
+    Done,
+    Failed,
 }
 
 #[derive(Debug)]
@@ -153,5 +175,12 @@ pub enum MessageKind {
     ToolResult {
         name: String,
         is_error: bool,
+    },
+    SubtaskEnter {
+        depth: usize,
+        label: String,
+    },
+    SubtaskExit {
+        depth: usize,
     },
 }

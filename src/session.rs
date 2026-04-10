@@ -75,6 +75,40 @@ impl Session {
         Ok(Some(session))
     }
 
+    /// Save an isolated subtask context to `.agent/subtasks/{counter:03}_d{depth}.json`.
+    /// Includes the system prompt and full message history so scripted tests can verify
+    /// exactly what each agent node saw and did.
+    pub fn save_subtask(
+        &self,
+        working_dir: &Path,
+        depth: usize,
+        label: &str,
+        system_prompt: &str,
+        counter: usize,
+    ) -> anyhow::Result<()> {
+        #[derive(Serialize)]
+        struct SubtaskLog<'a> {
+            depth: usize,
+            label: &'a str,
+            system_prompt: &'a str,
+            session: &'a Session,
+        }
+        let mut session_snapshot = self.clone();
+        session_snapshot.updated_at = Utc::now();
+        let log = SubtaskLog {
+            depth,
+            label,
+            system_prompt,
+            session: &session_snapshot,
+        };
+        let json = serde_json::to_string_pretty(&log)?;
+        let dir = working_dir.join(SESSION_DIR).join("subtasks");
+        fs::create_dir_all(&dir)?;
+        let fname = format!("{counter:03}_d{depth}.json");
+        fs::write(dir.join(fname), json)?;
+        Ok(())
+    }
+
     pub fn save(&self, working_dir: &Path) -> anyhow::Result<()> {
         let mut session = self.clone();
         session.updated_at = Utc::now();
@@ -145,6 +179,96 @@ impl Session {
         }
         history
     }
+
+    /// Build compressed Ollama history for the orchestrator.
+    /// Keeps the system prompt and all user messages intact.
+    /// For tool results older than `keep_recent` exchanges, replaces the full
+    /// content with a one-line summary to save context tokens.
+    pub fn to_compressed_history(&self, system_prompt: &str, keep_recent: usize) -> Vec<Message> {
+        let mut history = vec![Message::new(Role::System, system_prompt.to_string())];
+
+        // Count user messages to determine which exchanges are "recent"
+        let user_count = self
+            .messages
+            .iter()
+            .filter(|m| {
+                matches!(
+                    m,
+                    SessionMessage::Text {
+                        role: Role::User,
+                        ..
+                    }
+                )
+            })
+            .count();
+        let compress_before = user_count.saturating_sub(keep_recent);
+        let mut user_seen = 0usize;
+
+        let mut i = 0;
+        while i < self.messages.len() {
+            match &self.messages[i] {
+                SessionMessage::Text {
+                    role,
+                    content,
+                    images,
+                } => {
+                    if *role == Role::User {
+                        user_seen += 1;
+                    }
+                    let mut msg = Message::new(role.clone(), content.clone());
+                    msg.images = images.clone();
+                    history.push(msg);
+                    i += 1;
+                }
+                SessionMessage::Thinking { .. } => {
+                    i += 1;
+                }
+                SessionMessage::ToolCall { .. } => {
+                    let mut calls = Vec::new();
+                    while i < self.messages.len() {
+                        if let SessionMessage::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                        } = &self.messages[i]
+                        {
+                            calls.push(crate::types::ToolCall {
+                                id: id.clone(),
+                                name: name.clone(),
+                                arguments: serde_json::from_str(arguments)
+                                    .unwrap_or(serde_json::Value::Null),
+                            });
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    history.push(Message::tool_request(String::new(), calls));
+                }
+                SessionMessage::ToolResult { content, .. } => {
+                    let compressed = if user_seen <= compress_before {
+                        // Old exchange — compress to first line + size
+                        let first_line = content.lines().next().unwrap_or("");
+                        let total_chars = content.len();
+                        if total_chars > 200 {
+                            format!(
+                                "{} [{} chars, summarized]",
+                                &first_line[..first_line.len().min(150)],
+                                total_chars
+                            )
+                        } else {
+                            content.clone()
+                        }
+                    } else {
+                        content.clone()
+                    };
+                    history.push(Message::new(Role::Tool, compressed));
+                    i += 1;
+                }
+            }
+        }
+        history
+    }
 }
 
 // --- Conversions ---
@@ -174,7 +298,9 @@ impl From<&ChatMessage> for SessionMessage {
             MessageKind::Thinking => SessionMessage::Thinking {
                 content: msg.content.clone(),
             },
-            MessageKind::Queued => SessionMessage::Text {
+            MessageKind::Queued
+            | MessageKind::SubtaskEnter { .. }
+            | MessageKind::SubtaskExit { .. } => SessionMessage::Text {
                 role: msg.role.clone(),
                 content: msg.content.clone(),
                 images: vec![],
@@ -477,6 +603,74 @@ mod tests {
         // system + user + assistant = 3; thinking skipped
         assert_eq!(history.len(), 3);
         assert!(history.iter().all(|m| m.role != Role::Tool));
+    }
+
+    #[test]
+    fn compressed_history_truncates_old_tool_results() {
+        let dir = tmp();
+        let mut session = Session::new("gpt-4", dir.path());
+        // Exchange 1 (old — will be compressed)
+        session.append_message(SessionMessage::Text {
+            role: Role::User,
+            content: "task 1".into(),
+            images: vec![],
+        });
+        session.append_message(SessionMessage::ToolCall {
+            id: "c1".into(),
+            name: "delegate_task".into(),
+            arguments: "{}".into(),
+        });
+        session.append_message(SessionMessage::ToolResult {
+            name: "delegate_task".into(),
+            content: "a]".repeat(500), // 1000 chars
+            is_error: false,
+        });
+        session.append_message(SessionMessage::Text {
+            role: Role::Assistant,
+            content: "done 1".into(),
+            images: vec![],
+        });
+        // Exchange 2 (recent — kept intact)
+        session.append_message(SessionMessage::Text {
+            role: Role::User,
+            content: "task 2".into(),
+            images: vec![],
+        });
+        session.append_message(SessionMessage::ToolCall {
+            id: "c2".into(),
+            name: "delegate_task".into(),
+            arguments: "{}".into(),
+        });
+        session.append_message(SessionMessage::ToolResult {
+            name: "delegate_task".into(),
+            content: "b".repeat(500),
+            is_error: false,
+        });
+        session.append_message(SessionMessage::Text {
+            role: Role::Assistant,
+            content: "done 2".into(),
+            images: vec![],
+        });
+
+        let full = session.to_ollama_history("sys");
+        let compressed = session.to_compressed_history("sys", 1);
+
+        // Full history has the full 1000-char tool result
+        let full_tool_result = &full[3].content; // sys, user, tool_req, tool_result
+        assert!(full_tool_result.len() >= 1000);
+
+        // Compressed history should have a short summary for the old result
+        let comp_tool_result = &compressed[3].content;
+        assert!(
+            comp_tool_result.len() < 200,
+            "old tool result should be compressed, got {} chars",
+            comp_tool_result.len()
+        );
+        assert!(comp_tool_result.contains("summarized"));
+
+        // Recent result (exchange 2) should be kept intact
+        let comp_recent = &compressed[7].content; // sys, user, tool_req, tool_result(compressed), asst, user, tool_req, tool_result
+        assert_eq!(comp_recent.len(), 500);
     }
 
     #[test]

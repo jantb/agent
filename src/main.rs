@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use agent::agent::{system_prompt, AgentTask, AgentTaskConfig, UserAction};
+use agent::agent::{system_prompt_for_depth, AgentTask, AgentTaskConfig, UserAction};
 use agent::app::App;
 use agent::autocomplete;
 use agent::config;
@@ -65,6 +65,7 @@ async fn main() -> anyhow::Result<()> {
     // Clear old log on startup
     let _ = std::fs::remove_file(log_dir.join("agent.log"));
     let _ = std::fs::remove_file(log_dir.join("test_report.json"));
+    let _ = std::fs::remove_dir_all(log_dir.join("subtasks"));
     let file_appender = tracing_appender::rolling::never(&log_dir, "agent.log");
     let (non_blocking, _log_guard) = tracing_appender::non_blocking(file_appender);
     tracing_subscriber::registry()
@@ -112,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Load or create session
     let memory_index = memory::build_memory_index(&working_dir);
-    let sys_prompt = system_prompt(&working_dir, &memory_index);
+    let sys_prompt = system_prompt_for_depth(0, &working_dir, &memory_index);
     let (session, resumed) = match Session::load(&working_dir)? {
         Some(s) => {
             let date = s.updated_at.format("%Y-%m-%d %H:%M").to_string();
@@ -129,10 +130,7 @@ async fn main() -> anyhow::Result<()> {
     // Capture display values before moving into agent task
     let mcp_connected = mcp_registry.connected_servers().await;
     let mcp_failed = mcp_registry.failed_servers().await;
-    let context_window = match ollama.fetch_context_window().await {
-        Ok(Some(n)) => Some(n),
-        Ok(None) | Err(_) => Some(131_072),
-    };
+    let context_window = Some(agent::ollama::NUM_CTX);
     let session_messages: Vec<ChatMessage> = session
         .messages
         .iter()
@@ -140,7 +138,7 @@ async fn main() -> anyhow::Result<()> {
         .collect();
 
     // Channels
-    let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(256);
     let (action_tx, action_rx) = mpsc::channel::<UserAction>(16);
 
     // Spawn agent task
@@ -148,7 +146,7 @@ async fn main() -> anyhow::Result<()> {
         ollama: Arc::new(ollama),
         mcp: Arc::new(mcp_registry),
         working_dir: working_dir.clone(),
-        tools: all_tools,
+        all_tools,
         event_tx,
         action_rx,
         session,
@@ -177,6 +175,10 @@ async fn main() -> anyhow::Result<()> {
                             Duration::from_secs(120),
                             async {
                                 let mut log: Vec<String> = Vec::new();
+                                let mut current_depth: usize = 0;
+                                let mut orch_prompt_max: u64 = 0;
+                                let mut subtask_prompt_max: u64 = 0;
+                                let mut total_eval: u64 = 0;
                                 loop {
                                     match event_rx.recv().await {
                                         Some(AgentEvent::ThinkingStarted) => {
@@ -204,26 +206,42 @@ async fn main() -> anyhow::Result<()> {
                                             log.push(format!("ToolCompleted: {}", r.call_id));
                                         }
                                         Some(AgentEvent::TurnStats { eval_count, eval_duration_ns, prompt_eval_count }) => {
-                                            log.push(format!("TurnStats: eval={eval_count} prompt={prompt_eval_count} ns={eval_duration_ns}"));
+                                            log.push(format!("TurnStats: depth={current_depth} eval={eval_count} prompt={prompt_eval_count} ns={eval_duration_ns}"));
+                                            total_eval += eval_count;
+                                            if current_depth == 0 {
+                                                orch_prompt_max = orch_prompt_max.max(prompt_eval_count);
+                                            } else {
+                                                subtask_prompt_max = subtask_prompt_max.max(prompt_eval_count);
+                                            }
                                         }
                                         Some(AgentEvent::TurnDone) => {
                                             println!("\n[done]");
                                             log.push("TurnDone".into());
-                                            return (StepStatus::Completed, log);
+                                            return (StepStatus::Completed, log, orch_prompt_max, subtask_prompt_max, total_eval);
                                         }
                                         Some(AgentEvent::Error(e)) => {
                                             println!("\n[error] {e}");
                                             log.push(format!("Error: {e}"));
-                                            return (StepStatus::Failed(e), log);
+                                            return (StepStatus::Failed(e), log, orch_prompt_max, subtask_prompt_max, total_eval);
                                         }
                                         Some(AgentEvent::LoopDetected) => {
                                             let msg = "Loop detected";
                                             println!("\n[error] {msg}");
                                             log.push(format!("Error: {msg}"));
-                                            return (StepStatus::Failed(msg.into()), log);
+                                            return (StepStatus::Failed(msg.into()), log, orch_prompt_max, subtask_prompt_max, total_eval);
+                                        }
+                                        Some(AgentEvent::SubtaskEnter { depth, label }) => {
+                                            println!("[subtask_enter] depth={depth} {label}");
+                                            log.push(format!("SubtaskEnter: depth={depth} {label}"));
+                                            current_depth = depth;
+                                        }
+                                        Some(AgentEvent::SubtaskExit { depth }) => {
+                                            println!("[subtask_exit] depth={depth}");
+                                            log.push(format!("SubtaskExit: depth={depth}"));
+                                            current_depth = depth.saturating_sub(1);
                                         }
                                         None => {
-                                            return (StepStatus::Failed("channel closed".into()), log);
+                                            return (StepStatus::Failed("channel closed".into()), log, orch_prompt_max, subtask_prompt_max, total_eval);
                                         }
                                     }
                                 }
@@ -231,19 +249,25 @@ async fn main() -> anyhow::Result<()> {
                         )
                         .await;
 
-                        let (status, events_log) = match result {
-                            Ok(pair) => pair,
-                            Err(_) => {
-                                println!("[timeout] step exceeded 120s");
-                                (StepStatus::TimedOut, vec![])
-                            }
-                        };
+                        let (status, events_log, orch_prompt_max, subtask_prompt_max, total_eval) =
+                            match result {
+                                Ok(tuple) => tuple,
+                                Err(_) => {
+                                    println!("[timeout] step exceeded 120s");
+                                    (StepStatus::TimedOut, vec![], 0, 0, 0)
+                                }
+                            };
 
                         report.add_step(StepReport {
                             command: text.clone(),
                             events: events_log,
                             duration_ms: step_start.elapsed().as_millis() as u64,
                             status,
+                            token_summary: script::TokenSummary {
+                                orchestrator_prompt_max: orch_prompt_max,
+                                subtask_prompt_max,
+                                total_eval,
+                            },
                         });
                     }
                     ScriptCommand::Wait(dur) => {
@@ -257,6 +281,75 @@ async fn main() -> anyhow::Result<()> {
                             report.add_assertion(result);
                         }
                     }
+                    ScriptCommand::ExpectEvent(event_name) => {
+                        let Some(last_step) = report.steps.last() else {
+                            println!("[assert] FAIL expect_event {event_name} — no Send step preceding this assertion");
+                            report.add_assertion(script::AssertionResult {
+                                assert_type: "expect_event".into(),
+                                path: event_name.clone(),
+                                expected: event_name.clone(),
+                                actual: "no prior step".into(),
+                                pass: false,
+                            });
+                            continue;
+                        };
+                        let pass = last_step
+                            .events
+                            .iter()
+                            .any(|e| e.contains(event_name.as_str()));
+                        let pass_str = if pass { "PASS" } else { "FAIL" };
+                        println!("[assert] {pass_str} expect_event {event_name}");
+                        report.add_assertion(script::AssertionResult {
+                            assert_type: "expect_event".into(),
+                            path: event_name.clone(),
+                            expected: event_name.clone(),
+                            actual: if pass {
+                                event_name.clone()
+                            } else {
+                                String::new()
+                            },
+                            pass,
+                        });
+                    }
+                    ScriptCommand::ExpectStat { lhs, op, rhs } => {
+                        let Some(last_step) = report.steps.last() else {
+                            println!(
+                                "[assert] FAIL expect_stat — no Send step preceding this assertion"
+                            );
+                            report.add_assertion(script::AssertionResult {
+                                assert_type: "expect_stat".into(),
+                                path: format!("{lhs} {op} {rhs}"),
+                                expected: format!("{lhs} {op} {rhs}"),
+                                actual: "no prior step".into(),
+                                pass: false,
+                            });
+                            continue;
+                        };
+                        let ts = &last_step.token_summary;
+                        let lhs_val = ts.resolve_field(lhs);
+                        let rhs_val = ts.resolve_field(rhs);
+                        let (pass, actual_str) = match (lhs_val, rhs_val) {
+                            (Some(l), Some(r)) => {
+                                let result = match op.as_str() {
+                                    "<" => l < r,
+                                    ">" => l > r,
+                                    "==" => l == r,
+                                    _ => false,
+                                };
+                                (result, format!("{l} {op} {r}"))
+                            }
+                            _ => (false, format!("unknown field(s): {lhs}, {rhs}")),
+                        };
+                        let pass_str = if pass { "PASS" } else { "FAIL" };
+                        println!("[assert] {pass_str} expect_stat {lhs} {op} {rhs} ({actual_str})");
+                        report.add_assertion(script::AssertionResult {
+                            assert_type: "expect_stat".into(),
+                            path: format!("{lhs} {op} {rhs}"),
+                            expected: format!("{lhs} {op} {rhs}"),
+                            actual: actual_str,
+                            pass,
+                        });
+                    }
                 }
             }
 
@@ -266,6 +359,9 @@ async fn main() -> anyhow::Result<()> {
             report.write_to_file(&report_path)?;
             println!("[report] written to {}", report_path.display());
             report.print_summary();
+
+            // Clean up subtask context dumps — they've been summarised in the report
+            let _ = std::fs::remove_dir_all(log_dir.join("subtasks"));
 
             return Ok(());
         }
@@ -323,7 +419,10 @@ async fn main() -> anyhow::Result<()> {
                     ScriptCommand::Wait(dur) => {
                         tokio::time::sleep(dur).await;
                     }
-                    ScriptCommand::ExpectFile { .. } | ScriptCommand::ExpectNoFile(_) => {
+                    ScriptCommand::ExpectFile { .. }
+                    | ScriptCommand::ExpectNoFile(_)
+                    | ScriptCommand::ExpectEvent(_)
+                    | ScriptCommand::ExpectStat { .. } => {
                         tracing::info!("script assertion skipped in TUI mode");
                     }
                 }
@@ -334,6 +433,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Event loop
+    let mut current_depth: usize = 0;
     loop {
         app.tick();
         terminal.draw(|f| ui::draw(f, &app))?;
@@ -346,7 +446,7 @@ async fn main() -> anyhow::Result<()> {
                 handle_terminal_event(maybe_event, &mut app, &action_tx).await;
             }
             agent_event = event_rx.recv() => {
-                if !handle_agent_event(agent_event, &mut app, &action_tx).await {
+                if !handle_agent_event(agent_event, &mut app, &action_tx, &mut current_depth).await {
                     break;
                 }
                 // Notify script task when turn ends
@@ -560,6 +660,7 @@ async fn handle_agent_event(
     event: Option<AgentEvent>,
     app: &mut App,
     action_tx: &mpsc::Sender<UserAction>,
+    current_depth: &mut usize,
 ) -> bool {
     match event {
         Some(AgentEvent::ThinkingStarted) => app.set_thinking(true),
@@ -573,7 +674,12 @@ async fn handle_agent_event(
             eval_duration_ns,
             prompt_eval_count,
         }) => {
-            app.update_turn_stats(eval_count, eval_duration_ns, prompt_eval_count);
+            app.update_turn_stats(
+                eval_count,
+                eval_duration_ns,
+                prompt_eval_count,
+                *current_depth,
+            );
         }
         Some(AgentEvent::TurnDone) => {
             app.finish_assistant_turn();
@@ -585,14 +691,24 @@ async fn handle_agent_event(
             }
         }
         Some(AgentEvent::Error(e)) => {
+            app.fail_active_node();
             app.finish_assistant_turn();
             app.message_queue.clear();
             app.set_error(e);
         }
         Some(AgentEvent::LoopDetected) => {
+            app.fail_active_node();
             app.finish_assistant_turn();
             app.message_queue.clear();
             app.set_error("Loop detected — model was repeating itself".into());
+        }
+        Some(AgentEvent::SubtaskEnter { depth, label }) => {
+            *current_depth = depth;
+            app.enter_subtask(depth, label);
+        }
+        Some(AgentEvent::SubtaskExit { depth }) => {
+            *current_depth = depth.saturating_sub(1);
+            app.exit_subtask(depth);
         }
         None => return false,
     }

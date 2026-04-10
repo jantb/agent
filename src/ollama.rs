@@ -9,6 +9,8 @@ use tracing::{debug, trace, warn};
 
 use crate::types::{AgentEvent, Message, Role, ToolCall, ToolDefinition, TurnOutcome};
 
+pub const NUM_CTX: u64 = 131_072;
+
 static CALL_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn next_call_id() -> String {
@@ -299,7 +301,7 @@ impl OllamaClient {
                 "top_p": 0.95,
                 "top_k": 64,
                 "num_predict": 8192,
-                "num_ctx": 131_072
+                "num_ctx": NUM_CTX
             }
         });
 

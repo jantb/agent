@@ -1,0 +1,24 @@
+# Multi-turn context savings test.
+# Three sequential tasks that would accumulate large context in a flat agent.
+# With delegation + storage-time truncation, orchestrator context growth is bounded.
+#
+# Note: orchestrator_prompt_max > subtask_prompt_max is expected because Ollama's
+# model template overhead (~5500 tokens) dominates. The savings show in growth rate:
+# orchestrator grows ~500-600 tokens/turn vs ~2000-3000 for a flat agent.
+#
+# Turn 1: search task
+Search all .rs files under src/ for "pub struct" definitions. List each struct name and file.
+@expect_event SubtaskEnter
+@expect_event SubtaskExit
+
+# Turn 2: another search task (context should NOT balloon from turn 1 result)
+Search all .rs files under src/ for "pub fn" definitions. Count them and list the top 5 files by function count.
+@expect_event SubtaskEnter
+@expect_event SubtaskExit
+
+# Turn 3: targeted task (orchestrator context should still be small)
+Write the text 'multi-turn test passed' to the file multiturn_out.txt
+@wait 30
+@expect_file multiturn_out.txt multi-turn test passed
+@expect_event SubtaskEnter
+@expect_event SubtaskExit

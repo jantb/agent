@@ -1,0 +1,8 @@
+# Context savings verification.
+# Verify delegation happens and subtask results flow back correctly.
+# Note: orchestrator_prompt_max > subtask_prompt_max because Ollama's model template
+# adds ~5500 tokens overhead. Real savings show across multiple turns (see multiturn_savings.txt).
+Search all .rs files under src/ for public function definitions (lines containing "pub fn").
+List each function name and the file it appears in, then give me a total count.
+@expect_event SubtaskEnter
+@expect_event SubtaskExit

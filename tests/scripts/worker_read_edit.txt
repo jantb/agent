@@ -1,0 +1,6 @@
+# Test that worker-level agent can read and then edit a file (multi-step within one subtask).
+Write the text 'hello world' to the file worker_test.txt, then change 'world' to 'rust' in that same file.
+@wait 30
+@expect_file worker_test.txt hello rust
+@expect_event SubtaskEnter
+@expect_event SubtaskExit

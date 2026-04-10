@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use crate::autocomplete::Autocomplete;
 use crate::input::InputState;
-use crate::types::{ChatMessage, MessageKind, Role, ToolCall, ToolResult};
+use crate::types::{ChatMessage, MessageKind, NodeInfo, NodeStatus, Role, ToolCall, ToolResult};
 
 pub struct App {
     pub messages: Vec<ChatMessage>,
@@ -28,12 +28,17 @@ pub struct App {
     pub last_eval_count: Option<u64>,
     pub last_eval_duration_ns: Option<u64>,
     pub last_prompt_eval_count: Option<u64>,
+    pub context_used: u64,
     pub context_window_size: Option<u64>,
     pub total_tokens_up: u64,
     pub total_tokens_down: u64,
     pub pending_images: Vec<String>, // base64-encoded images to attach to next message
     pub message_queue: VecDeque<(String, Vec<String>)>,
     pub autocomplete: Option<Autocomplete>,
+    /// Live agent tree: nodes in enter order, with depth-based hierarchy.
+    pub tree: Vec<NodeInfo>,
+    /// Tool call counter for the currently active subtask node.
+    pub subtask_tool_calls: usize,
 }
 
 impl App {
@@ -60,12 +65,15 @@ impl App {
             last_eval_count: None,
             last_eval_duration_ns: None,
             last_prompt_eval_count: None,
+            context_used: 0,
             context_window_size: None,
             total_tokens_up: 0,
             total_tokens_down: 0,
             pending_images: Vec::new(),
             message_queue: VecDeque::new(),
             autocomplete: None,
+            tree: Vec::new(),
+            subtask_tool_calls: 0,
         }
     }
 
@@ -85,6 +93,14 @@ impl App {
         self.current_streaming_text.clear();
         self.turn_started_at = Some(Instant::now());
         self.error_message = None;
+        // Seed the tree with the root orchestrator node
+        self.tree.clear();
+        self.subtask_tool_calls = 0;
+        self.tree.push(NodeInfo {
+            depth: 0,
+            label: "orchestrator".into(),
+            status: NodeStatus::Active,
+        });
     }
 
     pub fn append_streaming_text(&mut self, delta: &str) {
@@ -130,6 +146,10 @@ impl App {
         self.streaming = false;
         self.thinking = false;
         self.turn_started_at = None;
+        // Clear the tree — panel should not persist between turns.
+        // start_assistant_turn re-seeds it with the root node at turn start.
+        self.tree.clear();
+        self.subtask_tool_calls = 0;
         if self.auto_scroll {
             self.scroll_offset = 0;
         }
@@ -144,10 +164,14 @@ impl App {
         eval_count: u64,
         eval_duration_ns: u64,
         prompt_eval_count: u64,
+        depth: usize,
     ) {
         self.last_eval_count = Some(eval_count);
         self.last_eval_duration_ns = Some(eval_duration_ns);
-        self.last_prompt_eval_count = Some(prompt_eval_count);
+        if depth == 0 {
+            self.last_prompt_eval_count = Some(prompt_eval_count);
+            self.context_used += prompt_eval_count;
+        }
         self.total_tokens_down += eval_count;
         self.total_tokens_up += prompt_eval_count;
     }
@@ -174,6 +198,9 @@ impl App {
                 arguments: args_summary,
             },
         });
+        if call.name != "delegate_task" {
+            self.subtask_tool_calls += 1;
+        }
     }
 
     pub fn add_tool_result(&mut self, result: &ToolResult) {
@@ -202,6 +229,71 @@ impl App {
                 is_error: result.is_error,
             },
         });
+    }
+
+    pub fn enter_subtask(&mut self, depth: usize, label: String) {
+        // Mark all currently active nodes as suspended
+        for node in &mut self.tree {
+            if node.status == NodeStatus::Active {
+                node.status = NodeStatus::Suspended;
+            }
+        }
+        self.tree.push(NodeInfo {
+            depth,
+            label: label.clone(),
+            status: NodeStatus::Active,
+        });
+        self.messages.push(ChatMessage {
+            role: Role::Assistant,
+            content: format!("depth {depth}: {label}"),
+            kind: MessageKind::SubtaskEnter { depth, label },
+        });
+        self.subtask_tool_calls = 0;
+    }
+
+    /// Mark the currently active node (at any depth) as Failed.
+    /// Called when an error or loop is detected during a turn.
+    pub fn fail_active_node(&mut self) {
+        if let Some(node) = self
+            .tree
+            .iter_mut()
+            .rfind(|n| n.status == NodeStatus::Active)
+        {
+            node.status = NodeStatus::Failed;
+        }
+    }
+
+    pub fn exit_subtask(&mut self, depth: usize) {
+        // Mark the node at this depth as done
+        if let Some(node) = self.tree.iter_mut().rfind(|n| n.depth == depth) {
+            node.status = NodeStatus::Done;
+        }
+        // Re-activate the parent (depth-1) if it exists and is suspended
+        if depth > 0 {
+            if let Some(parent) = self
+                .tree
+                .iter_mut()
+                .rfind(|n| n.depth == depth - 1 && n.status == NodeStatus::Suspended)
+            {
+                parent.status = NodeStatus::Active;
+            }
+        }
+        self.messages.push(ChatMessage {
+            role: Role::Assistant,
+            content: format!("depth {depth} done"),
+            kind: MessageKind::SubtaskExit { depth },
+        });
+        self.subtask_tool_calls = 0;
+    }
+
+    /// True when the tree has at least one subtask node (should show tree panel).
+    pub fn has_tree(&self) -> bool {
+        self.tree.len() > 1
+    }
+
+    pub fn clear_tree(&mut self) {
+        self.tree.clear();
+        self.subtask_tool_calls = 0;
     }
 
     pub fn scroll_up(&mut self) {
@@ -320,6 +412,7 @@ impl App {
         self.last_eval_count = None;
         self.last_eval_duration_ns = None;
         self.last_prompt_eval_count = None;
+        self.context_used = 0;
     }
 }
 
@@ -522,7 +615,7 @@ mod tests {
     #[test]
     fn update_turn_stats_stores_values() {
         let mut app = make_app();
-        app.update_turn_stats(100, 2_000_000_000, 200);
+        app.update_turn_stats(100, 2_000_000_000, 200, 0);
         assert_eq!(app.last_eval_count, Some(100));
         assert_eq!(app.last_eval_duration_ns, Some(2_000_000_000));
         assert_eq!(app.last_prompt_eval_count, Some(200));
@@ -655,7 +748,7 @@ mod tests {
         let mut app = make_app();
         app.add_user_message("hello".into());
         app.set_error("oops".into());
-        app.update_turn_stats(10, 500_000_000, 20);
+        app.update_turn_stats(10, 500_000_000, 20, 0);
         app.clear_messages();
         assert!(app.messages.is_empty());
         assert!(app.error_message.is_none());
@@ -692,7 +785,7 @@ mod tests {
         let mut app = make_app();
         app.start_assistant_turn();
         // 100 tokens in 2 seconds = 50 tok/s
-        app.update_turn_stats(100, 2_000_000_000, 50);
+        app.update_turn_stats(100, 2_000_000_000, 50, 0);
         assert!(app.tok_per_sec().is_some());
     }
 
@@ -700,7 +793,7 @@ mod tests {
     fn tok_per_sec_uses_ollama_duration() {
         let mut app = make_app();
         // 100 tokens in 2 seconds = 50 tok/s
-        app.update_turn_stats(100, 2_000_000_000, 50);
+        app.update_turn_stats(100, 2_000_000_000, 50, 0);
         let rate = app.tok_per_sec().unwrap();
         assert!((rate - 50.0).abs() < 0.01, "expected ~50, got {rate}");
     }
@@ -709,7 +802,7 @@ mod tests {
     fn tok_per_sec_stable_over_time() {
         let mut app = make_app();
         app.start_assistant_turn();
-        app.update_turn_stats(1000, 1_000_000_000, 50);
+        app.update_turn_stats(1000, 1_000_000_000, 50, 0);
         let rate1 = app.tok_per_sec().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(100));
         let rate2 = app.tok_per_sec().unwrap();
@@ -723,7 +816,7 @@ mod tests {
     fn tok_per_sec_none_without_duration() {
         let mut app = make_app();
         // zero duration → None
-        app.update_turn_stats(100, 0, 50);
+        app.update_turn_stats(100, 0, 50, 0);
         assert!(app.tok_per_sec().is_none());
     }
 
@@ -804,8 +897,8 @@ mod tests {
     #[test]
     fn update_turn_stats_accumulates_across_turns() {
         let mut app = make_app();
-        app.update_turn_stats(100, 1_000_000_000, 200);
-        app.update_turn_stats(50, 500_000_000, 75);
+        app.update_turn_stats(100, 1_000_000_000, 200, 0);
+        app.update_turn_stats(50, 500_000_000, 75, 0);
         assert_eq!(app.total_tokens_down, 150);
         assert_eq!(app.total_tokens_up, 275);
     }
@@ -813,7 +906,7 @@ mod tests {
     #[test]
     fn clear_messages_does_not_reset_cumulative_tokens() {
         let mut app = make_app();
-        app.update_turn_stats(100, 1_000_000_000, 200);
+        app.update_turn_stats(100, 1_000_000_000, 200, 0);
         app.clear_messages();
         assert_eq!(app.total_tokens_down, 100);
         assert_eq!(app.total_tokens_up, 200);
@@ -947,5 +1040,144 @@ mod tests {
         // First should be promoted to Text, second should still be Queued
         assert!(matches!(app.messages[0].kind, MessageKind::Text));
         assert!(matches!(app.messages[1].kind, MessageKind::Queued));
+    }
+
+    // --- tree state management ---
+
+    #[test]
+    fn start_assistant_turn_seeds_root_node() {
+        let mut app = make_app();
+        app.start_assistant_turn();
+        assert_eq!(app.tree.len(), 1);
+        assert_eq!(app.tree[0].depth, 0);
+        assert_eq!(app.tree[0].label, "orchestrator");
+        assert_eq!(app.tree[0].status, NodeStatus::Active);
+    }
+
+    #[test]
+    fn enter_subtask_suspends_parent_and_adds_child() {
+        let mut app = make_app();
+        app.start_assistant_turn();
+        app.enter_subtask(1, "search files".into());
+        assert_eq!(app.tree.len(), 2);
+        assert_eq!(app.tree[0].status, NodeStatus::Suspended);
+        assert_eq!(app.tree[1].depth, 1);
+        assert_eq!(app.tree[1].label, "search files");
+        assert_eq!(app.tree[1].status, NodeStatus::Active);
+    }
+
+    #[test]
+    fn exit_subtask_marks_done_and_reactivates_parent() {
+        let mut app = make_app();
+        app.start_assistant_turn();
+        app.enter_subtask(1, "task".into());
+        app.exit_subtask(1);
+        assert_eq!(app.tree[0].status, NodeStatus::Active);
+        assert_eq!(app.tree[1].status, NodeStatus::Done);
+    }
+
+    #[test]
+    fn enter_exit_resets_tool_call_counter() {
+        let mut app = make_app();
+        app.start_assistant_turn();
+        app.subtask_tool_calls = 5;
+        app.enter_subtask(1, "task".into());
+        assert_eq!(app.subtask_tool_calls, 0);
+        app.subtask_tool_calls = 3;
+        app.exit_subtask(1);
+        assert_eq!(app.subtask_tool_calls, 0);
+    }
+
+    #[test]
+    fn nested_subtasks_suspend_and_resume_correctly() {
+        let mut app = make_app();
+        app.start_assistant_turn();
+        app.enter_subtask(1, "coordinator".into());
+        app.enter_subtask(2, "worker".into());
+        assert_eq!(app.tree[0].status, NodeStatus::Suspended);
+        assert_eq!(app.tree[1].status, NodeStatus::Suspended);
+        assert_eq!(app.tree[2].status, NodeStatus::Active);
+        app.exit_subtask(2);
+        assert_eq!(app.tree[2].status, NodeStatus::Done);
+        assert_eq!(app.tree[1].status, NodeStatus::Active);
+        assert_eq!(app.tree[0].status, NodeStatus::Suspended);
+        app.exit_subtask(1);
+        assert_eq!(app.tree[1].status, NodeStatus::Done);
+        assert_eq!(app.tree[0].status, NodeStatus::Active);
+    }
+
+    #[test]
+    fn fail_active_node_marks_active_as_failed() {
+        let mut app = make_app();
+        app.start_assistant_turn();
+        app.enter_subtask(1, "failing task".into());
+        app.fail_active_node();
+        assert_eq!(app.tree[1].status, NodeStatus::Failed);
+        assert_eq!(app.tree[0].status, NodeStatus::Suspended);
+    }
+
+    #[test]
+    fn has_tree_false_until_subtask_entered() {
+        let mut app = make_app();
+        app.start_assistant_turn();
+        assert!(!app.has_tree());
+        app.enter_subtask(1, "task".into());
+        assert!(app.has_tree());
+    }
+
+    #[test]
+    fn finish_assistant_turn_clears_tree() {
+        let mut app = make_app();
+        app.start_assistant_turn();
+        app.enter_subtask(1, "task".into());
+        app.append_streaming_text("done");
+        app.finish_assistant_turn();
+        assert!(app.tree.is_empty());
+        assert_eq!(app.subtask_tool_calls, 0);
+    }
+
+    #[test]
+    fn multiple_subtasks_at_same_depth() {
+        let mut app = make_app();
+        app.start_assistant_turn();
+        app.enter_subtask(1, "first".into());
+        app.exit_subtask(1);
+        app.enter_subtask(1, "second".into());
+        app.exit_subtask(1);
+        assert_eq!(app.tree.len(), 3);
+        assert_eq!(app.tree[1].status, NodeStatus::Done);
+        assert_eq!(app.tree[2].status, NodeStatus::Done);
+        assert_eq!(app.tree[0].status, NodeStatus::Active);
+    }
+
+    #[test]
+    fn add_tool_call_delegate_does_not_increment_counter() {
+        let mut app = make_app();
+        let call = ToolCall {
+            id: "c1".into(),
+            name: "delegate_task".into(),
+            arguments: serde_json::json!({"prompt": "do stuff"}),
+        };
+        app.add_tool_call(&call);
+        assert_eq!(app.subtask_tool_calls, 0);
+    }
+
+    #[test]
+    fn update_turn_stats_depth0_updates_prompt_eval() {
+        let mut app = make_app();
+        app.update_turn_stats(100, 2_000_000_000, 500, 0);
+        assert_eq!(app.last_prompt_eval_count, Some(500));
+    }
+
+    #[test]
+    fn update_turn_stats_depth1_skips_prompt_eval() {
+        let mut app = make_app();
+        app.update_turn_stats(100, 2_000_000_000, 500, 0);
+        app.update_turn_stats(50, 1_000_000_000, 200, 1);
+        // depth-1 should NOT overwrite the depth-0 value
+        assert_eq!(app.last_prompt_eval_count, Some(500));
+        // but totals should accumulate
+        assert_eq!(app.total_tokens_down, 150);
+        assert_eq!(app.total_tokens_up, 700);
     }
 }

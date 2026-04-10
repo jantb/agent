@@ -1,0 +1,8 @@
+# Test that a subtask error is returned to the orchestrator gracefully.
+# The subtask will try to read a nonexistent file and return an error string.
+# SubtaskExit should still fire (guaranteed by the RAII guard).
+Read the file nonexistent_file_xyz.txt and tell me its contents.
+@wait 30
+@expect_no_file nonexistent_file_xyz.txt
+@expect_event SubtaskEnter
+@expect_event SubtaskExit

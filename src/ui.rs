@@ -9,11 +9,13 @@ use ratatui::{
 use crate::app::App;
 use crate::autocomplete::COMMANDS;
 use crate::markdown::markdown_to_lines;
-use crate::types::{MessageKind, Role};
+use crate::types::{MessageKind, NodeStatus, Role};
+
+const TREE_PANEL_WIDTH: u16 = 44;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let input_height = app.input.line_count().min(5) as u16;
-    let [title_area, chat_area, input_area, status_area] = Layout::vertical([
+    let [title_area, body_area, input_area, status_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(input_height),
@@ -21,14 +23,69 @@ pub fn draw(frame: &mut Frame, app: &App) {
     ])
     .areas(frame.area());
 
+    // Split body into chat + optional right tree panel
+    let (chat_area, tree_area_opt) = if app.has_tree() && body_area.width > TREE_PANEL_WIDTH + 20 {
+        let [tree, chat] =
+            Layout::horizontal([Constraint::Length(TREE_PANEL_WIDTH), Constraint::Min(20)])
+                .areas(body_area);
+        (chat, Some(tree))
+    } else {
+        (body_area, None)
+    };
+
     draw_title(frame, app, title_area);
     draw_chat(frame, app, chat_area);
+    if let Some(tree_area) = tree_area_opt {
+        draw_tree_panel(frame, app, tree_area);
+    }
     draw_input(frame, app, input_area);
     draw_status(frame, app, status_area);
 
     if let Some(ac) = &app.autocomplete {
         draw_autocomplete(frame, ac, input_area);
     }
+}
+
+fn draw_tree_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Header
+    lines.push(Line::from(Span::styled(
+        "─ Agent Tree ".to_string() + &"─".repeat(area.width.saturating_sub(14) as usize),
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    for node in &app.tree {
+        let indent = " ".repeat(node.depth);
+        let (glyph, color) = match node.status {
+            NodeStatus::Active => ("●", Color::Cyan),
+            NodeStatus::Suspended => ("⊙", Color::Yellow),
+            NodeStatus::Done => ("○", Color::DarkGray),
+            NodeStatus::Failed => ("✗", Color::Red),
+        };
+        let max_label = (area.width as usize).saturating_sub(indent.len() + 3 + 1);
+        let label = truncate(&node.label, max_label);
+        let connector = if node.depth > 0 { "└─ " } else { "" };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{indent}{connector}"),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(glyph, Style::default().fg(color)),
+            Span::raw(" "),
+            Span::styled(label, Style::default().fg(color)),
+        ]));
+    }
+
+    // Show tool call counter for active node
+    if app.subtask_tool_calls > 0 {
+        lines.push(Line::from(Span::styled(
+            format!("  {} tool calls", app.subtask_tool_calls),
+            Style::default().fg(Color::Indexed(240)),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn draw_title(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -180,6 +237,25 @@ fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                         ),
                     ]));
                 }
+            }
+            MessageKind::SubtaskEnter { depth, label } => {
+                let indent = "─".repeat((*depth * 2).min(area.width as usize / 2));
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {indent}▶ "), Style::default().fg(Color::Cyan)),
+                    Span::styled(
+                        label.clone(),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+            }
+            MessageKind::SubtaskExit { depth } => {
+                let indent = "─".repeat((*depth * 2).min(area.width as usize / 2));
+                lines.push(Line::from(Span::styled(
+                    format!("  {indent}◀ done"),
+                    Style::default().fg(Color::DarkGray),
+                )));
             }
             MessageKind::ToolResult { name, is_error } => {
                 let (symbol, color) = if *is_error {
@@ -391,12 +467,31 @@ fn draw_autocomplete(frame: &mut Frame, ac: &crate::autocomplete::Autocomplete, 
 fn draw_status(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let elapsed_str = format_elapsed(app.elapsed_secs());
 
+    // Build optional agent breadcrumb
+    let breadcrumb = if app.has_tree() {
+        let active_label = app
+            .tree
+            .iter()
+            .rfind(|n| n.status == NodeStatus::Active)
+            .map(|n| n.label.as_str())
+            .unwrap_or("");
+        let calls = app.subtask_tool_calls;
+        let call_str = if calls > 0 {
+            format!(" ● {calls} tool calls")
+        } else {
+            String::new()
+        };
+        format!("[{active_label}]{call_str}  ")
+    } else {
+        String::new()
+    };
+
     let left_span = if let Some(err) = &app.error_message {
         Span::styled(err.as_str(), Style::default().fg(Color::Red))
     } else if app.thinking {
         let s = app.spinner_char();
         Span::styled(
-            format!("{s} Thinking...{elapsed_str}"),
+            format!("{breadcrumb}{s} Thinking...{elapsed_str}"),
             Style::default().fg(Color::Yellow),
         )
     } else if app.streaming {
@@ -411,7 +506,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             String::new()
         };
         Span::styled(
-            format!("{s} Streaming...{elapsed_str}{speed}{queue}"),
+            format!("{breadcrumb}{s} Streaming...{elapsed_str}{speed}{queue}"),
             Style::default().fg(Color::Cyan),
         )
     } else {
@@ -432,7 +527,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     }
 
     if let Some(total) = app.context_window_size {
-        let used = app.last_prompt_eval_count.unwrap_or(0);
+        let used = app.context_used;
         if total > 0 {
             let pct = (used as f64 / total as f64 * 100.0).round() as u64;
             right_spans.push(Span::styled(
@@ -692,5 +787,131 @@ mod tests {
         assert_eq!(total_height, 10);
         // With viewport height 6, auto_scroll should be at 4
         assert_eq!(compute_scroll(total_height, 6, true, 0), 4);
+    }
+
+    // Helper: collect buffer cells in a row range into a String.
+    fn row_text(
+        buffer: &ratatui::buffer::Buffer,
+        row: u16,
+        col_start: u16,
+        col_end: u16,
+    ) -> String {
+        (col_start..col_end)
+            .map(|c| {
+                buffer
+                    .cell(ratatui::layout::Position::new(c, row))
+                    .map(|cell| cell.symbol())
+                    .unwrap_or(" ")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tree_panel_width_is_44() {
+        assert_eq!(TREE_PANEL_WIDTH, 44);
+    }
+
+    #[test]
+    fn tree_panel_renders_on_left() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = crate::app::App::new("model".into(), std::path::PathBuf::from("."));
+        app.start_assistant_turn();
+        app.enter_subtask(1, "test_worker".into());
+
+        assert!(
+            app.has_tree(),
+            "has_tree() must be true after enter_subtask"
+        );
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        // Row 1 is the body start (row 0 is title). The tree header "─ Agent Tree"
+        // must appear somewhere in the LEFT portion (cols 0..TREE_PANEL_WIDTH).
+        let found_header = (1..30u16).any(|row| {
+            let left = row_text(&buffer, row, 0, TREE_PANEL_WIDTH);
+            left.contains("Agent Tree")
+        });
+        assert!(found_header, "Tree header not found in left panel columns");
+
+        // Verify the header is NOT in the right (chat) portion of the same row.
+        let found_in_right = (1..30u16).any(|row| {
+            let right = row_text(&buffer, row, TREE_PANEL_WIDTH, 100);
+            right.contains("Agent Tree")
+        });
+        assert!(
+            !found_in_right,
+            "Tree header must not appear in the chat area"
+        );
+    }
+
+    #[test]
+    fn thinking_renders_after_subtask_output() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = crate::app::App::new("model".into(), std::path::PathBuf::from("."));
+        app.start_assistant_turn();
+        // Simulate subtask enter/exit, then orchestrator thinking
+        app.enter_subtask(1, "worker".into());
+        app.exit_subtask(1);
+        app.set_thinking(true);
+        app.append_thinking_text("considering next step");
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        // Find the row containing SubtaskExit marker "◀" and the row containing "thinking"
+        let exit_row = (0..30u16).find(|&r| row_text(&buffer, r, 0, 100).contains("◀"));
+        let thinking_row = (0..30u16).find(|&r| row_text(&buffer, r, 0, 100).contains("thinking"));
+
+        let exit_row = exit_row.expect("subtask exit marker not found");
+        let thinking_row = thinking_row.expect("thinking text not found");
+
+        assert!(
+            thinking_row > exit_row,
+            "thinking (row {thinking_row}) must render after subtask exit (row {exit_row})"
+        );
+    }
+
+    #[test]
+    fn tree_indent_single_space_per_depth() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = crate::app::App::new("model".into(), std::path::PathBuf::from("."));
+        app.start_assistant_turn();
+        app.enter_subtask(1, "coordinator".into());
+        app.enter_subtask(2, "worker".into());
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        // Find the row that contains "worker" in the tree panel (left 44 cols).
+        let worker_row =
+            (0..30u16).find(|&row| row_text(&buffer, row, 0, TREE_PANEL_WIDTH).contains("worker"));
+
+        let worker_row = worker_row.expect("worker node not found in tree panel");
+        let left = row_text(&buffer, worker_row, 0, TREE_PANEL_WIDTH);
+
+        // depth=2 → 2 leading spaces before the connector "└─ "
+        // With 1-space-per-depth: "  └─ ●  worker"
+        // With 2-space-per-depth: "    └─ ● worker"
+        assert!(
+            left.starts_with("  └"),
+            "Expected 2 leading spaces (1 per depth level) before connector, got: {left:?}"
+        );
+        assert!(
+            !left.starts_with("    └"),
+            "Got 4 leading spaces — indent should be 1 space per depth, not 2: {left:?}"
+        );
     }
 }

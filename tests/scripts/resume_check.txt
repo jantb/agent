@@ -1,0 +1,14 @@
+# Verify the agent can handle a task after prior context exists.
+# This is a basic smoke test — a real resume test would need two separate runs.
+Write the text 'first' to file resume_a.txt
+@wait 30
+@expect_file resume_a.txt first
+@expect_event SubtaskEnter
+@expect_event SubtaskExit
+
+# Second turn — agent must still function with accumulated context
+Write the text 'second' to file resume_b.txt
+@wait 30
+@expect_file resume_b.txt second
+@expect_event SubtaskEnter
+@expect_event SubtaskExit

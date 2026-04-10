@@ -9,8 +9,18 @@ use serde::Serialize;
 pub enum ScriptCommand {
     Send(String),
     Wait(Duration),
-    ExpectFile { path: String, content: String },
+    ExpectFile {
+        path: String,
+        content: String,
+    },
     ExpectNoFile(String),
+    /// Assert that a named event appeared in the most recent step's event log.
+    ExpectEvent(String),
+    ExpectStat {
+        lhs: String,
+        op: String,
+        rhs: String,
+    },
 }
 
 pub fn parse_script(path: &Path) -> Result<Vec<ScriptCommand>> {
@@ -38,6 +48,21 @@ pub fn parse_script(path: &Path) -> Result<Vec<ScriptCommand>> {
             });
         } else if let Some(rest) = line.strip_prefix("@expect_no_file ") {
             cmds.push(ScriptCommand::ExpectNoFile(rest.trim().to_owned()));
+        } else if let Some(rest) = line.strip_prefix("@expect_event ") {
+            cmds.push(ScriptCommand::ExpectEvent(rest.trim().to_owned()));
+        } else if let Some(rest) = line.strip_prefix("@expect_stat ") {
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            if parts.len() != 3 {
+                bail!(
+                    "line {}: @expect_stat requires '<field> <op> <field>'",
+                    i + 1
+                );
+            }
+            cmds.push(ScriptCommand::ExpectStat {
+                lhs: parts[0].to_owned(),
+                op: parts[1].to_owned(),
+                rhs: parts[2].to_owned(),
+            });
         } else if line.starts_with('@') {
             bail!("line {}: unknown directive {:?}", i + 1, line);
         } else {
@@ -47,12 +72,36 @@ pub fn parse_script(path: &Path) -> Result<Vec<ScriptCommand>> {
     Ok(cmds)
 }
 
+/// Per-step token usage broken down by agent depth.
+/// Depths are determined by tracking SubtaskEnter/SubtaskExit events.
+#[derive(Debug, Serialize, Default)]
+pub struct TokenSummary {
+    /// Max prompt tokens seen in any single turn at depth 0 (orchestrator).
+    pub orchestrator_prompt_max: u64,
+    /// Max prompt tokens seen in any single turn at depth 1+ (subtasks).
+    pub subtask_prompt_max: u64,
+    /// Total generated tokens across all depths.
+    pub total_eval: u64,
+}
+
+impl TokenSummary {
+    pub fn resolve_field(&self, name: &str) -> Option<u64> {
+        match name {
+            "orchestrator_prompt_max" => Some(self.orchestrator_prompt_max),
+            "subtask_prompt_max" => Some(self.subtask_prompt_max),
+            "total_eval" => Some(self.total_eval),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct StepReport {
     pub command: String,
     pub events: Vec<String>,
     pub duration_ms: u64,
     pub status: StepStatus,
+    pub token_summary: TokenSummary,
 }
 
 #[derive(Debug, Serialize)]
@@ -113,6 +162,15 @@ impl TestReport {
             "assertions: {} passed, {} failed | steps timed out: {}",
             passed, failed, timed_out
         );
+        for (i, step) in self.steps.iter().enumerate() {
+            let t = &step.token_summary;
+            if t.total_eval > 0 {
+                println!(
+                    "step {i} tokens: orchestrator_prompt_max={} subtask_prompt_max={} total_eval={}",
+                    t.orchestrator_prompt_max, t.subtask_prompt_max, t.total_eval
+                );
+            }
+        }
     }
 }
 
@@ -211,6 +269,26 @@ mod tests {
             matches!(&cmds[2], ScriptCommand::ExpectFile { path, content } if path == "out.txt" && content == "done")
         );
         assert!(matches!(&cmds[3], ScriptCommand::ExpectNoFile(p) if p == "tmp"));
+    }
+
+    #[test]
+    fn parses_expect_event() {
+        let cmds = parse_str("@expect_event SubtaskEnter");
+        assert_eq!(
+            cmds,
+            vec![ScriptCommand::ExpectEvent("SubtaskEnter".into())]
+        );
+    }
+
+    #[test]
+    fn parses_expect_stat() {
+        let cmds = parse_str("@expect_stat orchestrator_prompt_max < subtask_prompt_max");
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(
+            &cmds[0],
+            ScriptCommand::ExpectStat { lhs, op, rhs }
+            if lhs == "orchestrator_prompt_max" && op == "<" && rhs == "subtask_prompt_max"
+        ));
     }
 
     #[test]

@@ -1,0 +1,7 @@
+# Test that the orchestrator delegates through coordinator to worker to write a file.
+# The orchestrator has only delegate_task, so it MUST delegate to write anything.
+Write the text 'delegation works' to the file tree_test_out.txt
+@wait 30
+@expect_file tree_test_out.txt delegation works
+@expect_event SubtaskEnter
+@expect_event SubtaskExit

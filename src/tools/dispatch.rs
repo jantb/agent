@@ -27,6 +27,7 @@ pub async fn execute_built_in(call: &ToolCall, working_dir: &Path) -> ToolResult
         "recall" => builtin::run_recall(call, working_dir).await,
         "forget" => builtin::run_forget(call, working_dir).await,
         "list_memories" => builtin::run_list_memories(call, working_dir).await,
+        "delegate_task" => Err("delegate_task must be intercepted before dispatch".into()),
         other => Err(format!("unknown built-in tool: {other}")),
     };
     let ms = t0.elapsed().as_millis();

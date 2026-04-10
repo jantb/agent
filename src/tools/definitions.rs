@@ -2,6 +2,31 @@ use serde_json::json;
 
 use crate::types::{ToolDefinition, ToolSource};
 
+pub fn delegate_task_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "delegate_task".into(),
+        description: "\
+Delegate a focused subtask to an isolated sub-agent running in its own fresh context window. \
+The sub-agent has NO access to the current conversation history — include all necessary context \
+in the prompt. It runs to completion and returns one distilled answer. \
+Use when a subtask would generate excessive intermediate output (many reads, searches, etc.) \
+that would pollute the current context, or when focused specialization is needed. \
+Do NOT use for trivial single-step operations."
+            .into(),
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "Complete, self-contained task description. Include every file path, line range, and context the sub-agent needs. The sub-agent cannot see your conversation history."
+                }
+            },
+            "required": ["prompt"]
+        }),
+        source: ToolSource::BuiltIn,
+    }
+}
+
 pub fn built_in_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
@@ -204,6 +229,7 @@ pub fn built_in_tool_definitions() -> Vec<ToolDefinition> {
             }),
             source: ToolSource::BuiltIn,
         },
+        delegate_task_def(),
     ]
 }
 
@@ -214,7 +240,7 @@ mod tests {
     #[test]
     fn built_in_tool_definitions_count() {
         let defs = built_in_tool_definitions();
-        assert_eq!(defs.len(), 15);
+        assert_eq!(defs.len(), 16);
         let names: Vec<_> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"write_file"));
@@ -231,5 +257,6 @@ mod tests {
         assert!(names.contains(&"forget"));
         assert!(names.contains(&"list_memories"));
         assert!(names.contains(&"line_count"));
+        assert!(names.contains(&"delegate_task"));
     }
 }

@@ -1,0 +1,13 @@
+# Context savings demonstration.
+# A research task (multi-file search + counting) that would balloon the
+# orchestrator context in a flat agent — here it stays tiny because workers
+# do the heavy lifting and return only a distilled answer.
+#
+# Assertions verify:
+#   1. Delegation happened (SubtaskEnter/SubtaskExit events in THIS step)
+#   2. The report's token_summary shows orchestrator_prompt_max << subtask_prompt_max
+#      (inspect .agent/test_report.json after the run)
+Search all .rs files under src/ for public struct definitions (lines starting with "pub struct").
+List each struct name and the file it appears in, then give me a total count.
+@expect_event SubtaskEnter
+@expect_event SubtaskExit
