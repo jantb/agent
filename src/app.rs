@@ -6,6 +6,25 @@ use crate::autocomplete::Autocomplete;
 use crate::input::InputState;
 use crate::types::{ChatMessage, MessageKind, NodeInfo, NodeStatus, Role, ToolCall, ToolResult};
 
+pub struct ModelPickerState {
+    pub models: Vec<String>,
+    pub selected: usize,
+}
+
+impl ModelPickerState {
+    pub fn move_up(&mut self) {
+        self.selected = self.selected.saturating_sub(1);
+    }
+    pub fn move_down(&mut self) {
+        if self.selected + 1 < self.models.len() {
+            self.selected += 1;
+        }
+    }
+    pub fn selected(&self) -> Option<&str> {
+        self.models.get(self.selected).map(String::as_str)
+    }
+}
+
 pub struct App {
     pub messages: Vec<ChatMessage>,
     pub input: InputState,
@@ -35,6 +54,8 @@ pub struct App {
     pub pending_images: Vec<String>, // base64-encoded images to attach to next message
     pub message_queue: VecDeque<(String, Vec<String>)>,
     pub autocomplete: Option<Autocomplete>,
+    pub available_models: Vec<String>,
+    pub model_picker: Option<ModelPickerState>,
     /// Live agent tree: nodes in enter order, with depth-based hierarchy.
     pub tree: Vec<NodeInfo>,
     /// Tool call counter for the currently active subtask node.
@@ -72,6 +93,8 @@ impl App {
             pending_images: Vec::new(),
             message_queue: VecDeque::new(),
             autocomplete: None,
+            available_models: Vec::new(),
+            model_picker: None,
             tree: Vec::new(),
             subtask_tool_calls: 0,
         }
@@ -508,6 +531,7 @@ mod tests {
             call_id: "c1".into(),
             output: "content".into(),
             is_error: false,
+            images: vec![],
         };
         app.add_tool_result(&result);
         assert_eq!(app.messages.len(), 2);
@@ -866,6 +890,7 @@ mod tests {
             call_id: "c1".into(),
             output: "result".into(),
             is_error: false,
+            images: vec![],
         };
         app.add_tool_result(&result);
         if let MessageKind::ToolResult { name, .. } = &app.messages[0].kind {

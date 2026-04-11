@@ -13,7 +13,7 @@ use tokio::time::{interval, Duration};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use agent::agent::{system_prompt_for_depth, AgentTask, AgentTaskConfig, UserAction};
-use agent::app::App;
+use agent::app::{App, ModelPickerState};
 use agent::autocomplete;
 use agent::config;
 use agent::keys;
@@ -373,6 +373,7 @@ async fn main() -> anyhow::Result<()> {
     app.mcp_connected = mcp_connected;
     app.mcp_failed = mcp_failed;
     app.resumed_session = resumed;
+    app.available_models = models;
 
     for chat_msg in session_messages {
         app.messages.push(chat_msg);
@@ -499,6 +500,39 @@ async fn handle_terminal_event(
 
 async fn apply_command(cmd: keys::UiCommand, app: &mut App, action_tx: &mpsc::Sender<UserAction>) {
     use keys::UiCommand;
+
+    // Model picker active: intercept keys
+    if app.model_picker.is_some() {
+        match cmd {
+            UiCommand::ScrollUp | UiCommand::HistoryPrev => {
+                app.model_picker.as_mut().unwrap().move_up();
+                return;
+            }
+            UiCommand::ScrollDown | UiCommand::HistoryNext => {
+                app.model_picker.as_mut().unwrap().move_down();
+                return;
+            }
+            UiCommand::Submit | UiCommand::Tab => {
+                let model = app
+                    .model_picker
+                    .as_ref()
+                    .unwrap()
+                    .selected()
+                    .map(str::to_string);
+                app.model_picker = None;
+                if let Some(model) = model {
+                    app.model_name = model.clone();
+                    action_tx.send(UserAction::ChangeModel(model)).await.ok();
+                }
+                return;
+            }
+            UiCommand::Quit => {} // fall through
+            _ => {
+                app.model_picker = None;
+                return;
+            }
+        }
+    }
 
     // Autocomplete active: intercept keys
     if let Some(ac) = &mut app.autocomplete {
@@ -635,7 +669,19 @@ async fn apply_command(cmd: keys::UiCommand, app: &mut App, action_tx: &mpsc::Se
 }
 
 async fn handle_slash_or_send(text: String, app: &mut App, action_tx: &mpsc::Sender<UserAction>) {
-    if text.trim() == "/clear" || text.trim() == "/new" {
+    if text.trim() == "/model" {
+        if !app.available_models.is_empty() {
+            let sel = app
+                .available_models
+                .iter()
+                .position(|m| m == &app.model_name)
+                .unwrap_or(0);
+            app.model_picker = Some(ModelPickerState {
+                models: app.available_models.clone(),
+                selected: sel,
+            });
+        }
+    } else if text.trim() == "/clear" || text.trim() == "/new" {
         app.clear_messages();
         if let Err(e) = action_tx.send(UserAction::ClearHistory).await {
             tracing::error!("failed to send ClearHistory action: {e}");

@@ -63,6 +63,7 @@ pub struct ToolResult {
     pub call_id: String,
     pub output: String,
     pub is_error: bool,
+    pub images: Vec<String>,
 }
 
 #[derive(Debug)]

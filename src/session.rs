@@ -47,6 +47,8 @@ pub enum SessionMessage {
         name: String,
         content: String,
         is_error: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<String>,
     },
 }
 
@@ -171,8 +173,12 @@ impl Session {
                     }
                     history.push(Message::tool_request(String::new(), calls));
                 }
-                SessionMessage::ToolResult { content, .. } => {
-                    history.push(Message::new(Role::Tool, content.clone()));
+                SessionMessage::ToolResult {
+                    content, images, ..
+                } => {
+                    let mut msg = Message::new(Role::Tool, content.clone());
+                    msg.images = images.clone();
+                    history.push(msg);
                     i += 1;
                 }
             }
@@ -294,6 +300,7 @@ impl From<&ChatMessage> for SessionMessage {
                 name: name.clone(),
                 content: msg.content.clone(),
                 is_error: *is_error,
+                images: vec![],
             },
             MessageKind::Thinking => SessionMessage::Thinking {
                 content: msg.content.clone(),
@@ -345,6 +352,7 @@ impl From<SessionMessage> for ChatMessage {
                 name,
                 content,
                 is_error,
+                ..
             } => ChatMessage {
                 role: Role::Tool,
                 content,
@@ -624,6 +632,7 @@ mod tests {
             name: "delegate_task".into(),
             content: "a]".repeat(500), // 1000 chars
             is_error: false,
+            images: vec![],
         });
         session.append_message(SessionMessage::Text {
             role: Role::Assistant,
@@ -645,6 +654,7 @@ mod tests {
             name: "delegate_task".into(),
             content: "b".repeat(500),
             is_error: false,
+            images: vec![],
         });
         session.append_message(SessionMessage::Text {
             role: Role::Assistant,

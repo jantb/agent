@@ -16,6 +16,10 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "/help",
         desc: "Show help",
     },
+    SlashCommand {
+        name: "/model",
+        desc: "Switch Ollama model",
+    },
 ];
 
 pub struct Autocomplete {

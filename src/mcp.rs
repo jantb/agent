@@ -179,11 +179,13 @@ impl McpClient {
                 call_id: call.id.clone(),
                 output,
                 is_error: false,
+                images: vec![],
             },
             Err(e) => ToolResult {
                 call_id: call.id.clone(),
                 output: e.to_string(),
                 is_error: true,
+                images: vec![],
             },
         }
     }
@@ -284,6 +286,7 @@ impl McpRegistry {
             call_id: call.id.clone(),
             output: format!("no MCP server handles tool: {}", call.name),
             is_error: true,
+            images: vec![],
         }
     }
 

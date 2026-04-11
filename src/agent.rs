@@ -8,7 +8,7 @@ use crate::{
     memory,
     ollama::OllamaClient,
     session::{Session, SessionMessage},
-    tools::{delegate_task_def, execute_built_in},
+    tools::execute_built_in,
     types::{AgentEvent, Role, ToolCall, ToolDefinition, ToolResult, ToolSource, TurnOutcome},
 };
 
@@ -30,14 +30,14 @@ fn orchestrator_system_prompt(working_dir: &std::path::Path, memory_index: &str)
     let mut prompt = format!(
         "\
 You are the orchestration layer of a multi-level AI agent. Working directory: {dir}
-Your ONLY tool is `delegate_task`. You cannot read files, search, or execute code.
+Primary tool: `delegate_task`. You may also use `write_file`, `append_file`, `edit_file` to write final output directly.
 
 ## Rules
 1. Decompose the user's goal into focused, atomic subtasks.
 2. Delegate each via `delegate_task` — one at a time, sequentially.
 3. Every prompt must be fully self-contained (file paths, line ranges, full context). Sub-agents see nothing else.
 4. Never send vague prompts. Be specific: \"Read src/foo.rs lines 10-30 and summarize the validation logic\".
-5. Synthesize all results into a concise final answer (1-3 paragraphs max)."
+5. Synthesize results into a concise final answer (1-3 paragraphs max). For lengthy output, write it directly with `write_file` and include the path in your summary."
     );
     if !memory_index.is_empty() {
         prompt.push_str("\n\n## Stored memories\n");
@@ -58,7 +58,7 @@ Tools: glob_files, search_files, list_dir, delegate_task.
 2. If search tools answer the question directly, return the answer — don't delegate trivially.
 3. Delegate specific file operations (read/write/edit) to sub-agents — you lack file I/O tools.
 4. Every delegate_task prompt must be self-contained. Sub-agents see nothing else.
-5. Return a concise synthesis (2 paragraphs max)."
+5. Return a concise synthesis (2 paragraphs max). For lengthy results, delegate writing to a .md file and report the path."
     )
 }
 
@@ -74,7 +74,8 @@ You have full file-tool access. No delegation — complete everything yourself.
 2. Read only what is necessary; write/edit only what is asked.
 3. Sandboxed to {dir}.
 4. On error, report clearly rather than looping.
-5. Return a concise summary (under 500 words). Use file:line references for findings."
+5. Return a concise summary (under 500 words). Use file:line references for findings.
+6. For any output longer than ~20 lines (reports, analysis, code, documentation), write it to a .md file under the working directory and return only the file path + a 1-sentence summary. Reserve inline output for short answers only."
     )
 }
 
@@ -84,8 +85,15 @@ You have full file-tool access. No delegation — complete everything yourself.
 /// depth 2+ (worker):     all tools except delegate_task
 pub fn tools_for_depth(all_tools: &[ToolDefinition], depth: usize) -> Vec<ToolDefinition> {
     const COORDINATOR_TOOLS: &[&str] = &["delegate_task", "glob_files", "search_files", "list_dir"];
+    const ORCHESTRATOR_WRITE_TOOLS: &[&str] = &["write_file", "append_file", "edit_file"];
     match depth {
-        0 => vec![delegate_task_def()],
+        0 => all_tools
+            .iter()
+            .filter(|t| {
+                t.name == "delegate_task" || ORCHESTRATOR_WRITE_TOOLS.contains(&t.name.as_str())
+            })
+            .cloned()
+            .collect(),
         1 => all_tools
             .iter()
             .filter(|t| COORDINATOR_TOOLS.contains(&t.name.as_str()))
@@ -168,6 +176,7 @@ pub enum UserAction {
     Cancel,
     Quit,
     ClearHistory,
+    ChangeModel(String),
 }
 
 enum TurnPhaseResult {
@@ -375,6 +384,7 @@ impl AgentTask {
                     call_id: call.id.clone(),
                     output: answer,
                     is_error: false,
+                    images: vec![],
                 }
             } else {
                 Self::dispatch_tool(&call, &self.tools, &self.working_dir, &self.mcp).await
@@ -394,6 +404,7 @@ impl AgentTask {
                 name: call.name.clone(),
                 content: stored_content,
                 is_error: result.is_error,
+                images: result.images.clone(),
             });
             if matches!(call.name.as_str(), "remember" | "forget") {
                 let idx = memory::build_memory_index(&self.working_dir);
@@ -563,6 +574,10 @@ impl AgentTask {
                     self.save_or_emit_error().await;
                     self.emit(AgentEvent::TurnDone).await;
                 }
+                UserAction::ChangeModel(model) => {
+                    self.ollama.set_model(model);
+                    self.emit(AgentEvent::TurnDone).await;
+                }
                 UserAction::SendMessage(text, images) => {
                     self.session.append_message(SessionMessage::Text {
                         role: Role::User,
@@ -687,6 +702,7 @@ impl AgentTask {
                     call.name
                 ),
                 is_error: true,
+                images: vec![],
             },
             Some(def) => match &def.source {
                 ToolSource::BuiltIn => execute_built_in(call, working_dir).await,
@@ -786,12 +802,18 @@ mod tests {
     }
 
     #[test]
-    fn tools_for_depth_orchestrator_only_delegate() {
+    fn tools_for_depth_orchestrator_has_delegate_and_write_tools() {
         use crate::tools::built_in_tool_definitions;
         let all = built_in_tool_definitions();
         let tools = tools_for_depth(&all, 0);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name, "delegate_task");
+        let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"delegate_task"));
+        assert!(names.contains(&"write_file"));
+        assert!(names.contains(&"append_file"));
+        assert!(names.contains(&"edit_file"));
+        assert!(!names.contains(&"read_file"));
+        assert!(!names.contains(&"glob_files"));
+        assert_eq!(tools.len(), 4);
     }
 
     #[test]

@@ -31,8 +31,14 @@ impl InputState {
 
     pub fn insert_paste(&mut self, content: String) {
         if content.contains('\n') {
-            self.pasted = Some(content);
-            self.text.clear();
+            let before = self.text[..self.cursor_pos].to_string();
+            let after = self.text[self.cursor_pos..].to_string();
+            self.pasted = Some(if before.is_empty() {
+                content
+            } else {
+                format!("{before}{content}")
+            });
+            self.text = after;
             self.cursor_pos = 0;
             self.history_pos = None;
         } else {
@@ -153,6 +159,25 @@ impl InputState {
         } else {
             self.text.split('\n').count().max(1)
         }
+    }
+
+    pub fn visual_line_count(
+        &self,
+        first_prefix: usize,
+        cont_prefix: usize,
+        width: usize,
+    ) -> usize {
+        if self.pasted.is_some() {
+            return 1;
+        }
+        let mut total = 0usize;
+        for (i, line) in self.text.split('\n').enumerate() {
+            let prefix = if i == 0 { first_prefix } else { cont_prefix };
+            let avail = width.saturating_sub(prefix).max(1);
+            let chars = line.chars().count();
+            total += if chars == 0 { 1 } else { chars.div_ceil(avail) };
+        }
+        total.max(1)
     }
 
     pub fn delete_word(&mut self) {
@@ -494,14 +519,27 @@ mod tests {
     // --- new paste tests ---
 
     #[test]
-    fn insert_paste_multiline_sets_pasted_clears_text() {
+    fn insert_paste_multiline_prefix_merged() {
         let mut s = make();
         s.push_char('x');
         s.insert_paste("hello\nworld".to_string());
-        assert_eq!(s.pasted.as_deref(), Some("hello\nworld"));
+        assert_eq!(s.pasted.as_deref(), Some("xhello\nworld"));
         assert!(s.text.is_empty());
         assert_eq!(s.cursor_pos, 0);
         assert!(s.history_pos.is_none());
+    }
+
+    #[test]
+    fn insert_paste_multiline_suffix_preserved() {
+        let mut s = make();
+        for c in "ab".chars() {
+            s.push_char(c);
+        }
+        s.move_to_start(); // cursor at 0
+        s.insert_paste("x\ny".to_string());
+        assert_eq!(s.pasted.as_deref(), Some("x\ny"));
+        assert_eq!(s.text, "ab"); // after-cursor text preserved as suffix
+        assert_eq!(s.cursor_pos, 0);
     }
 
     #[test]

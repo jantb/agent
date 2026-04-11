@@ -9,7 +9,7 @@ use tracing::{debug, trace, warn};
 
 use crate::types::{AgentEvent, Message, Role, ToolCall, ToolDefinition, TurnOutcome};
 
-pub const NUM_CTX: u64 = 131_072;
+pub const NUM_CTX: u64 = 32_768;
 
 static CALL_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -211,7 +211,7 @@ impl ThinkTagFilter {
 
 pub struct OllamaClient {
     base_url: String,
-    model: String,
+    model: std::sync::Mutex<String>,
     http: reqwest::Client,
 }
 
@@ -219,9 +219,17 @@ impl OllamaClient {
     pub fn new(base_url: &str, model: &str, http: reqwest::Client) -> Self {
         OllamaClient {
             base_url: base_url.trim_end_matches('/').to_string(),
-            model: model.to_string(),
+            model: std::sync::Mutex::new(model.to_string()),
             http,
         }
+    }
+
+    pub fn set_model(&self, m: String) {
+        *self.model.lock().unwrap() = m;
+    }
+
+    fn current_model(&self) -> String {
+        self.model.lock().unwrap().clone()
     }
 
     fn messages_to_json(&self, history: &[Message]) -> serde_json::Value {
@@ -291,7 +299,7 @@ impl OllamaClient {
     ) -> anyhow::Result<TurnOutcome> {
         let url = format!("{}/api/chat", self.base_url);
         let body = json!({
-            "model": &self.model,
+            "model": self.current_model(),
             "messages": self.messages_to_json(history),
             "tools": Self::tools_to_json(tools),
             "stream": true,
@@ -306,7 +314,7 @@ impl OllamaClient {
         });
 
         debug!(
-            model = %self.model,
+            model = %self.current_model(),
             messages = history.len(),
             tools = tools.len(),
             "ollama request start"
@@ -488,7 +496,7 @@ impl OllamaClient {
 
     pub async fn fetch_context_window(&self) -> anyhow::Result<Option<u64>> {
         let url = format!("{}/api/show", self.base_url);
-        let body = json!({ "model": self.model });
+        let body = json!({ "model": self.current_model() });
         let resp: serde_json::Value = self
             .http
             .post(&url)

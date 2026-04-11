@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::tools::IGNORE_DIRS;
 use crate::types::ToolCall;
+use base64::Engine as _;
 
 use super::resolve_path;
 
@@ -207,4 +208,28 @@ fn list_tree(path: &Path, out: &mut String, depth: usize, max_depth: usize) -> R
         }
     }
     Ok(())
+}
+
+pub async fn run_read_image(
+    call: &ToolCall,
+    working_dir: &Path,
+) -> Result<(String, Vec<String>), String> {
+    let path_str = call.arguments["path"]
+        .as_str()
+        .ok_or("missing 'path' argument")?
+        .to_string();
+    let working_dir = working_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let path = resolve_path(&path_str, &working_dir);
+        let bytes = std::fs::read(&path).map_err(|e| format!("read error: {e}"))?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let filename = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path_str.clone());
+        let msg = format!("image loaded: {} ({} bytes)", filename, bytes.len());
+        Ok((msg, vec![b64]))
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
 }

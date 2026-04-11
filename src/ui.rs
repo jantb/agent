@@ -14,7 +14,31 @@ use crate::types::{MessageKind, NodeStatus, Role};
 const TREE_PANEL_WIDTH: u16 = 44;
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    let input_height = app.input.line_count().min(5) as u16;
+    let img_count = app.pending_image_count();
+    let queue_tag_len = if app.queue_len() > 0 {
+        format!("[{}q] ", app.queue_len()).chars().count()
+    } else {
+        0
+    };
+    let base_prefix_len = "❯ ".chars().count()
+        + queue_tag_len
+        + if img_count > 0 {
+            format!("[{img_count} img] ").chars().count()
+        } else {
+            0
+        };
+    let paste_tag_len = if let Some(p) = &app.input.pasted {
+        format!("[{} lines pasted] ", p.lines().count())
+            .chars()
+            .count()
+    } else {
+        0
+    };
+    let first_prefix_len = (base_prefix_len + paste_tag_len) as u16;
+    let input_height = app
+        .input
+        .visual_line_count(first_prefix_len as usize, 2, frame.area().width as usize)
+        .min(5) as u16;
     let [title_area, body_area, input_area, status_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
@@ -38,11 +62,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if let Some(tree_area) = tree_area_opt {
         draw_tree_panel(frame, app, tree_area);
     }
-    draw_input(frame, app, input_area);
+    draw_input(frame, app, input_area, first_prefix_len);
     draw_status(frame, app, status_area);
 
     if let Some(ac) = &app.autocomplete {
         draw_autocomplete(frame, ac, input_area);
+    }
+    if let Some(picker) = &app.model_picker {
+        draw_model_picker(frame, picker, frame.area());
     }
 }
 
@@ -63,18 +90,37 @@ fn draw_tree_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             NodeStatus::Done => ("○", Color::DarkGray),
             NodeStatus::Failed => ("✗", Color::Red),
         };
-        let max_label = (area.width as usize).saturating_sub(indent.len() + 3 + 1);
-        let label = truncate(&node.label, max_label);
         let connector = if node.depth > 0 { "└─ " } else { "" };
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{indent}{connector}"),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(glyph, Style::default().fg(color)),
-            Span::raw(" "),
-            Span::styled(label, Style::default().fg(color)),
-        ]));
+        let prefix_width = indent.len() + connector.len() + 2; // glyph + space
+        let avail = (area.width as usize).saturating_sub(prefix_width).max(1);
+        let label_chars: Vec<char> = node.label.chars().collect();
+        let chunks: Vec<String> = if label_chars.is_empty() {
+            vec![String::new()]
+        } else {
+            label_chars
+                .chunks(avail)
+                .map(|c| c.iter().collect())
+                .collect()
+        };
+        for (ci, chunk) in chunks.iter().enumerate() {
+            if ci == 0 {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{indent}{connector}"),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(glyph, Style::default().fg(color)),
+                    Span::raw(" "),
+                    Span::styled(chunk.clone(), Style::default().fg(color)),
+                ]));
+            } else {
+                let pad = " ".repeat(prefix_width);
+                lines.push(Line::from(Span::styled(
+                    format!("{pad}{chunk}"),
+                    Style::default().fg(color),
+                )));
+            }
+        }
     }
 
     // Show tool call counter for active node
@@ -240,15 +286,30 @@ fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             }
             MessageKind::SubtaskEnter { depth, label } => {
                 let indent = "─".repeat((*depth * 2).min(area.width as usize / 2));
-                lines.push(Line::from(vec![
-                    Span::styled(format!("  {indent}▶ "), Style::default().fg(Color::Cyan)),
-                    Span::styled(
-                        label.clone(),
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]));
+                let prefix = format!("  {indent}▶ ");
+                let prefix_w = prefix.chars().count();
+                let label_w = (area.width as usize).saturating_sub(prefix_w);
+                let cont_indent = " ".repeat(prefix_w);
+                for (i, seg) in word_wrap(label, label_w).into_iter().enumerate() {
+                    if i == 0 {
+                        lines.push(Line::from(vec![
+                            Span::styled(prefix.clone(), Style::default().fg(Color::Cyan)),
+                            Span::styled(
+                                seg,
+                                Style::default()
+                                    .fg(Color::Cyan)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                        ]));
+                    } else {
+                        lines.push(Line::from(Span::styled(
+                            format!("{cont_indent}{seg}"),
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        )));
+                    }
+                }
             }
             MessageKind::SubtaskExit { depth } => {
                 let indent = "─".repeat((*depth * 2).min(area.width as usize / 2));
@@ -323,15 +384,6 @@ fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     if app.streaming && !app.current_streaming_text.is_empty() {
         let text = &app.current_streaming_text;
         lines.extend(markdown_to_lines(text, "  "));
-        if let Some(last) = lines.last_mut() {
-            last.spans
-                .push(Span::styled("\u{258b}", Style::default().fg(Color::Cyan)));
-        }
-    } else if app.streaming {
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled("\u{258b}", Style::default().fg(Color::Cyan)),
-        ]));
     }
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
@@ -346,7 +398,12 @@ fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     frame.render_widget(paragraph.scroll((scroll, 0)), area);
 }
 
-fn draw_input(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+fn draw_input(
+    frame: &mut Frame,
+    app: &App,
+    area: ratatui::layout::Rect,
+    first_line_prefix_len: u16,
+) {
     let img_count = app.pending_image_count();
     let queue_tag = if app.queue_len() > 0 {
         format!("[{}q] ", app.queue_len())
@@ -364,9 +421,7 @@ fn draw_input(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     } else {
         String::new()
     };
-    let first_line_prefix_len = (base_prefix.chars().count() + paste_tag.chars().count()) as u16;
-    let continuation = "  ".to_string();
-
+    const CONT_PREFIX: u16 = 2;
     let prompt_color = if app.streaming {
         Color::DarkGray
     } else {
@@ -374,43 +429,86 @@ fn draw_input(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     };
 
     let mut lines: Vec<Line> = Vec::new();
-    for (i, text_line) in app.input.text.split('\n').enumerate() {
-        if i == 0 {
-            let mut spans = vec![Span::styled(
-                base_prefix.clone(),
-                Style::default().fg(prompt_color),
-            )];
-            if !paste_tag.is_empty() {
-                spans.push(Span::styled(
-                    paste_tag.clone(),
-                    Style::default().fg(Color::Yellow),
-                ));
-            }
-            spans.push(Span::raw(text_line.to_string()));
-            lines.push(Line::from(spans));
+    for (li, text_line) in app.input.text.split('\n').enumerate() {
+        let prefix_len = if li == 0 {
+            first_line_prefix_len
         } else {
-            lines.push(Line::from(vec![
-                Span::styled(continuation.clone(), Style::default().fg(prompt_color)),
-                Span::raw(text_line.to_string()),
-            ]));
+            CONT_PREFIX
+        };
+        let avail = (area.width as usize)
+            .saturating_sub(prefix_len as usize)
+            .max(1);
+        let chars: Vec<char> = text_line.chars().collect();
+        let chunks: Vec<String> = if chars.is_empty() {
+            vec![String::new()]
+        } else {
+            chars.chunks(avail).map(|c| c.iter().collect()).collect()
+        };
+        for (ci, chunk) in chunks.iter().enumerate() {
+            if li == 0 && ci == 0 {
+                let mut spans = vec![Span::styled(
+                    base_prefix.clone(),
+                    Style::default().fg(prompt_color),
+                )];
+                if !paste_tag.is_empty() {
+                    spans.push(Span::styled(
+                        paste_tag.clone(),
+                        Style::default().fg(Color::Yellow),
+                    ));
+                }
+                spans.push(Span::raw(chunk.clone()));
+                lines.push(Line::from(spans));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled("  ".to_string(), Style::default().fg(prompt_color)),
+                    Span::raw(chunk.clone()),
+                ]));
+            }
         }
     }
     frame.render_widget(Paragraph::new(lines), area);
+
+    // Wrap-aware cursor positioning
     let text_before_cursor = &app.input.text[..app.input.cursor_pos];
-    let cursor_row = text_before_cursor.matches('\n').count() as u16;
+    let logical_row = text_before_cursor.matches('\n').count();
     let last_newline = text_before_cursor.rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let cursor_col = app.input.text[last_newline..app.input.cursor_pos]
+    let cursor_col_in_logical = app.input.text[last_newline..app.input.cursor_pos]
         .chars()
-        .count() as u16;
-    let row_prefix_len = if cursor_row == 0 {
-        first_line_prefix_len
+        .count();
+
+    // Count visual rows from logical lines before the cursor's logical line
+    let mut visual_row = 0usize;
+    for (i, tl) in app.input.text.split('\n').enumerate() {
+        if i >= logical_row {
+            break;
+        }
+        let p = if i == 0 {
+            first_line_prefix_len as usize
+        } else {
+            CONT_PREFIX as usize
+        };
+        let av = (area.width as usize).saturating_sub(p).max(1);
+        let cc = tl.chars().count();
+        visual_row += if cc == 0 { 1 } else { cc.div_ceil(av) };
+    }
+    let prefix = if logical_row == 0 {
+        first_line_prefix_len as usize
     } else {
-        continuation.chars().count() as u16
+        CONT_PREFIX as usize
     };
-    frame.set_cursor_position(Position::new(
-        area.x + row_prefix_len + cursor_col,
-        area.y + cursor_row,
-    ));
+    let avail = (area.width as usize).saturating_sub(prefix).max(1);
+    visual_row += cursor_col_in_logical / avail;
+    let visual_col = cursor_col_in_logical % avail;
+
+    let input_height = area.height as usize;
+    let visual_row = visual_row.min(input_height.saturating_sub(1)) as u16;
+
+    if app.model_picker.is_none() {
+        frame.set_cursor_position(Position::new(
+            area.x + prefix as u16 + visual_col as u16,
+            area.y + visual_row,
+        ));
+    }
 }
 
 fn draw_autocomplete(frame: &mut Frame, ac: &crate::autocomplete::Autocomplete, input_area: Rect) {
@@ -461,6 +559,59 @@ fn draw_autocomplete(frame: &mut Frame, ac: &crate::autocomplete::Autocomplete, 
         Paragraph::new(lines)
             .block(Block::bordered().border_style(Style::default().fg(Color::DarkGray))),
         area,
+    );
+}
+
+fn draw_model_picker(frame: &mut Frame, picker: &crate::app::ModelPickerState, area: Rect) {
+    let max_visible = 10usize;
+    let count = picker.models.len().min(max_visible);
+    let popup_height = count as u16 + 2;
+    let popup_width = 40u16.min(area.width);
+    let popup_x = area.x + area.width.saturating_sub(popup_width) / 2;
+    let popup_y = area.y + area.height.saturating_sub(popup_height) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    // Determine scroll window so selected is always visible
+    let start = if picker.selected >= max_visible {
+        picker.selected - max_visible + 1
+    } else {
+        0
+    };
+
+    let lines: Vec<Line> = picker
+        .models
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(max_visible)
+        .map(|(i, name)| {
+            let (bg, fg) = if i == picker.selected {
+                (Color::DarkGray, Color::White)
+            } else {
+                (Color::Reset, Color::White)
+            };
+            Line::from(Span::styled(
+                format!(" {name}"),
+                Style::default()
+                    .bg(bg)
+                    .fg(fg)
+                    .add_modifier(if i == picker.selected {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
+            ))
+        })
+        .collect();
+
+    frame.render_widget(Clear, popup_area);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .title(" Select model ")
+                .border_style(Style::default().fg(Color::Cyan)),
+        ),
+        popup_area,
     );
 }
 
@@ -627,6 +778,48 @@ fn truncate(s: &str, max: usize) -> String {
         format!("{}...", &s[..end])
     }
 }
+
+fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 || text.is_empty() {
+        return vec![text.to_string()];
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let word_w = word.chars().count();
+        if current.is_empty() {
+            if word_w >= max_width {
+                let mut rem = word;
+                while rem.chars().count() >= max_width {
+                    let split = rem
+                        .char_indices()
+                        .nth(max_width)
+                        .map(|(i, _)| i)
+                        .unwrap_or(rem.len());
+                    lines.push(rem[..split].to_string());
+                    rem = &rem[split..];
+                }
+                current = rem.to_string();
+            } else {
+                current.push_str(word);
+            }
+        } else if current.chars().count() + 1 + word_w <= max_width {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current = word.to_string();
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
 fn compute_scroll(
     total_height: u32,
     area_height: u32,
@@ -913,5 +1106,26 @@ mod tests {
             !left.starts_with("    └"),
             "Got 4 leading spaces — indent should be 1 space per depth, not 2: {left:?}"
         );
+    }
+
+    #[test]
+    fn word_wrap_fits_on_one_line() {
+        assert_eq!(word_wrap("hello world", 20), vec!["hello world"]);
+    }
+
+    #[test]
+    fn word_wrap_breaks_at_word_boundary() {
+        assert_eq!(word_wrap("hello world", 7), vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn word_wrap_long_word_char_splits() {
+        let result = word_wrap("abcdefgh", 4);
+        assert_eq!(result, vec!["abcd", "efgh"]);
+    }
+
+    #[test]
+    fn word_wrap_empty_string() {
+        assert_eq!(word_wrap("", 10), vec![""]);
     }
 }

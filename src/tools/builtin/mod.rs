@@ -3,7 +3,9 @@ mod memory_tools;
 mod search;
 mod text_ops;
 
-pub use file_io::{run_append_file, run_delete_path, run_list_dir, run_read_file, run_write_file};
+pub use file_io::{
+    run_append_file, run_delete_path, run_list_dir, run_read_file, run_read_image, run_write_file,
+};
 pub use memory_tools::{run_forget, run_list_memories, run_recall, run_remember};
 pub use search::{run_glob_files, run_line_count, run_search_files};
 pub use text_ops::{run_diff_files, run_edit_file, run_replace_lines};

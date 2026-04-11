@@ -229,6 +229,18 @@ pub fn built_in_tool_definitions() -> Vec<ToolDefinition> {
             }),
             source: ToolSource::BuiltIn,
         },
+        ToolDefinition {
+            name: "read_image".into(),
+            description: "Read an image file and load it into the LLM's vision context. Supports PNG, JPG, GIF, WEBP. Returns a confirmation; the image is attached to the message so the model can see it.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Path to the image file" }
+                },
+                "required": ["path"]
+            }),
+            source: ToolSource::BuiltIn,
+        },
         delegate_task_def(),
     ]
 }
@@ -240,7 +252,7 @@ mod tests {
     #[test]
     fn built_in_tool_definitions_count() {
         let defs = built_in_tool_definitions();
-        assert_eq!(defs.len(), 16);
+        assert_eq!(defs.len(), 17);
         let names: Vec<_> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"write_file"));
@@ -257,6 +269,7 @@ mod tests {
         assert!(names.contains(&"forget"));
         assert!(names.contains(&"list_memories"));
         assert!(names.contains(&"line_count"));
+        assert!(names.contains(&"read_image"));
         assert!(names.contains(&"delegate_task"));
     }
 }

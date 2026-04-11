@@ -11,6 +11,31 @@ pub async fn execute_built_in(call: &ToolCall, working_dir: &Path) -> ToolResult
     let t0 = Instant::now();
     debug!(tool = %call.name, "built-in tool start");
 
+    if call.name == "read_image" {
+        let result = builtin::run_read_image(call, working_dir).await;
+        let ms = t0.elapsed().as_millis();
+        return match result {
+            Ok((text, images)) => {
+                debug!(tool = "read_image", ms, "built-in tool ok");
+                ToolResult {
+                    call_id: call.id.clone(),
+                    output: text,
+                    is_error: false,
+                    images,
+                }
+            }
+            Err(msg) => {
+                warn!(tool = "read_image", ms, error = %msg, "built-in tool error");
+                ToolResult {
+                    call_id: call.id.clone(),
+                    output: msg,
+                    is_error: true,
+                    images: vec![],
+                }
+            }
+        };
+    }
+
     let output = match call.name.as_str() {
         "read_file" => builtin::run_read_file(call, working_dir).await,
         "write_file" => builtin::run_write_file(call, working_dir).await,
@@ -28,6 +53,7 @@ pub async fn execute_built_in(call: &ToolCall, working_dir: &Path) -> ToolResult
         "forget" => builtin::run_forget(call, working_dir).await,
         "list_memories" => builtin::run_list_memories(call, working_dir).await,
         "delegate_task" => Err("delegate_task must be intercepted before dispatch".into()),
+        "read_image" => unreachable!("read_image handled above"),
         other => Err(format!("unknown built-in tool: {other}")),
     };
     let ms = t0.elapsed().as_millis();
@@ -39,6 +65,7 @@ pub async fn execute_built_in(call: &ToolCall, working_dir: &Path) -> ToolResult
                 call_id: call.id.clone(),
                 output: text,
                 is_error: false,
+                images: vec![],
             }
         }
         Err(msg) => {
@@ -47,6 +74,7 @@ pub async fn execute_built_in(call: &ToolCall, working_dir: &Path) -> ToolResult
                 call_id: call.id.clone(),
                 output: msg,
                 is_error: true,
+                images: vec![],
             }
         }
     }
@@ -674,5 +702,32 @@ mod tests {
         assert!(!result.is_error, "{}", result.output);
         assert!(result.output.contains("Alpha note"));
         assert!(result.output.contains("Beta note"));
+    }
+
+    #[tokio::test]
+    async fn read_image_loads_and_base64_encodes() {
+        let dir = setup_dir();
+        let data = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00";
+        std::fs::write(dir.path().join("test.png"), data).unwrap();
+        let call = make_call("read_image", json!({"path": "test.png"}));
+        let result = execute_built_in(&call, dir.path()).await;
+        assert!(!result.is_error, "{}", result.output);
+        assert!(result.output.contains("test.png"));
+        assert_eq!(result.images.len(), 1);
+        // Verify round-trip: decode base64 and compare
+        use base64::Engine as _;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&result.images[0])
+            .unwrap();
+        assert_eq!(decoded, data);
+    }
+
+    #[tokio::test]
+    async fn read_image_missing_file_is_error() {
+        let dir = setup_dir();
+        let call = make_call("read_image", json!({"path": "no_such.png"}));
+        let result = execute_built_in(&call, dir.path()).await;
+        assert!(result.is_error);
+        assert!(result.output.contains("read error"));
     }
 }

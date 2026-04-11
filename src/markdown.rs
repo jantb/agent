@@ -125,11 +125,11 @@ pub fn markdown_to_lines(text: &str, indent: &str) -> Vec<Line<'static>> {
     let parser = Parser::new_ext(text, opts);
     let mut state = RenderState::new(indent);
 
-    // Table state
+    // Table state — collect all rows first so we can compute column widths
     let mut in_table_header = false;
-    let mut in_table_row = false;
-    let mut table_cells: Vec<String> = Vec::new();
-    let mut table_header_done = false;
+    let mut table_header: Vec<String> = Vec::new();
+    let mut table_rows: Vec<Vec<String>> = Vec::new();
+    let mut current_row: Vec<String> = Vec::new();
 
     for event in parser {
         match event {
@@ -267,15 +267,70 @@ pub fn markdown_to_lines(text: &str, indent: &str) -> Vec<Line<'static>> {
                 state.in_link = false;
             }
 
-            // Table handling
+            // Table handling — collect all rows first, then emit aligned
             Event::Start(Tag::Table(..)) => {
-                table_cells.clear();
-                table_header_done = false;
+                table_header.clear();
+                table_rows.clear();
+                current_row.clear();
             }
             Event::End(TagEnd::Table) => {
                 if !state.current_spans.is_empty() {
                     state.flush_line();
                 }
+                // Compute column widths
+                let ncols = table_header.len();
+                let mut widths: Vec<usize> = table_header.iter().map(|c| c.len().max(3)).collect();
+                for row in &table_rows {
+                    for (i, cell) in row.iter().enumerate() {
+                        if i < widths.len() {
+                            widths[i] = widths[i].max(cell.len());
+                        }
+                    }
+                }
+                let emit_row = |lines: &mut Vec<Line<'static>>,
+                                cells: &[String],
+                                widths: &[usize],
+                                style: Style,
+                                indent: &str| {
+                    let mut parts = String::from("| ");
+                    for (i, cell) in cells.iter().enumerate() {
+                        let w = widths.get(i).copied().unwrap_or(cell.len());
+                        parts.push_str(&format!("{:<w$} | ", cell));
+                    }
+                    let mut spans: Vec<Span<'static>> = Vec::new();
+                    if !indent.is_empty() {
+                        spans.push(Span::raw(indent.to_owned()));
+                    }
+                    spans.push(Span::styled(parts, style));
+                    lines.push(Line::from(spans));
+                };
+                let header_style = Style::default().add_modifier(Modifier::BOLD);
+                let normal_style = Style::default();
+                let sep_style = Style::default().fg(Color::DarkGray);
+                let indent = state.indent.clone();
+                // Header row
+                emit_row(
+                    &mut state.lines,
+                    &table_header,
+                    &widths,
+                    header_style,
+                    &indent,
+                );
+                // Separator
+                let sep: String = std::iter::once("| ".to_string())
+                    .chain(widths.iter().map(|&w| format!("{} | ", "-".repeat(w))))
+                    .collect();
+                let mut sep_spans: Vec<Span<'static>> = Vec::new();
+                if !indent.is_empty() {
+                    sep_spans.push(Span::raw(indent.clone()));
+                }
+                sep_spans.push(Span::styled(sep, sep_style));
+                state.lines.push(Line::from(sep_spans));
+                // Data rows
+                for row in table_rows.drain(..) {
+                    emit_row(&mut state.lines, &row, &widths, normal_style, &indent);
+                }
+                let _ = ncols; // used via widths
                 state.blank_line();
             }
             Event::Start(Tag::TableHead) => {
@@ -283,54 +338,22 @@ pub fn markdown_to_lines(text: &str, indent: &str) -> Vec<Line<'static>> {
             }
             Event::End(TagEnd::TableHead) => {
                 in_table_header = false;
-                // Emit header row
-                let row = table_cells.join(" | ");
-                let mut spans: Vec<Span<'static>> = Vec::new();
-                if !state.indent.is_empty() {
-                    spans.push(Span::raw(state.indent.clone()));
-                }
-                spans.push(Span::raw(row));
-                state.lines.push(Line::from(spans));
-                // Separator
-                let sep = table_cells
-                    .iter()
-                    .map(|c| "-".repeat(c.len()))
-                    .collect::<Vec<_>>()
-                    .join("-+-");
-                let mut spans2: Vec<Span<'static>> = Vec::new();
-                if !state.indent.is_empty() {
-                    spans2.push(Span::raw(state.indent.clone()));
-                }
-                spans2.push(Span::styled(sep, Style::default().fg(Color::DarkGray)));
-                state.lines.push(Line::from(spans2));
-                table_cells.clear();
-                table_header_done = true;
+                table_header = std::mem::take(&mut current_row);
             }
-            Event::Start(Tag::TableRow) => {
-                in_table_row = true;
-            }
+            Event::Start(Tag::TableRow) => {}
             Event::End(TagEnd::TableRow) => {
-                in_table_row = false;
-                if table_header_done {
-                    let row = table_cells.join(" | ");
-                    let mut spans: Vec<Span<'static>> = Vec::new();
-                    if !state.indent.is_empty() {
-                        spans.push(Span::raw(state.indent.clone()));
-                    }
-                    spans.push(Span::raw(row));
-                    state.lines.push(Line::from(spans));
-                    table_cells.clear();
+                if !in_table_header {
+                    table_rows.push(std::mem::take(&mut current_row));
                 }
             }
             Event::Start(Tag::TableCell) => {}
             Event::End(TagEnd::TableCell) => {
-                // Collect spans into a cell string
                 let cell: String = state
                     .current_spans
                     .drain(..)
                     .map(|s| s.content.to_string())
                     .collect();
-                table_cells.push(cell);
+                current_row.push(cell);
             }
 
             // Ignored structural tags
@@ -396,7 +419,7 @@ pub fn markdown_to_lines(text: &str, indent: &str) -> Vec<Line<'static>> {
             }
             _ => {}
         }
-        let _ = (in_table_header, in_table_row); // suppress unused warnings
+        let _ = in_table_header; // suppress unused warnings
     }
 
     // Streaming fallback: code block not yet closed
@@ -607,6 +630,36 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert!(text.contains("world"), "text: {text}");
+    }
+
+    #[test]
+    fn table_aligned_columns() {
+        let md = "| Name | Value |\n|------|-------|\n| foo | 1 |\n| longer | 200 |\n";
+        let lines = markdown_to_lines(md, "");
+        let texts: Vec<String> = lines.iter().map(|l| spans_text(l)).collect();
+        // Header should contain both column names
+        assert!(texts
+            .iter()
+            .any(|t| t.contains("Name") && t.contains("Value")));
+        // Separator line should exist
+        assert!(texts.iter().any(|t| t.contains("---")));
+        // Data rows should be present
+        assert!(texts.iter().any(|t| t.contains("foo")));
+        assert!(texts.iter().any(|t| t.contains("longer")));
+        // All rows start with '|'
+        let row_lines: Vec<_> = texts.iter().filter(|t| t.contains('|')).collect();
+        assert!(
+            row_lines.len() >= 2,
+            "expected at least header + 2 data rows, got: {texts:?}"
+        );
+        // Columns should be padded to the same width: "longer" is wider than "foo"
+        let data_rows: Vec<_> = texts
+            .iter()
+            .filter(|t| t.contains("foo") || t.contains("longer"))
+            .collect();
+        assert_eq!(data_rows.len(), 2);
+        // Each row should have the same total length (aligned)
+        assert_eq!(data_rows[0].len(), data_rows[1].len());
     }
 
     #[test]
