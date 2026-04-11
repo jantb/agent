@@ -172,7 +172,7 @@ async fn main() -> anyhow::Result<()> {
                         println!("[send] {text}");
 
                         let result = tokio::time::timeout(
-                            Duration::from_secs(120),
+                            Duration::from_secs(240),
                             async {
                                 let mut log: Vec<String> = Vec::new();
                                 let mut current_depth: usize = 0;
@@ -253,7 +253,7 @@ async fn main() -> anyhow::Result<()> {
                             match result {
                                 Ok(tuple) => tuple,
                                 Err(_) => {
-                                    println!("[timeout] step exceeded 120s");
+                                    println!("[timeout] step exceeded 240s");
                                     (StepStatus::TimedOut, vec![], 0, 0, 0)
                                 }
                             };

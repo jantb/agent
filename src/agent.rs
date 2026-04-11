@@ -29,15 +29,22 @@ fn orchestrator_system_prompt(working_dir: &std::path::Path, memory_index: &str)
     let dir = working_dir.display();
     let mut prompt = format!(
         "\
-You are the orchestration layer of a multi-level AI agent. Working directory: {dir}
-Primary tool: `delegate_task`. You may also use `write_file`, `append_file`, `edit_file` to write final output directly.
+You are the orchestration layer of a coding AI agent. Working directory: {dir}
+You help users write, edit, debug, and understand code. Prefer idiomatic, compact solutions.
+Your ONLY tool is `delegate_task`. You MUST call it for EVERY request — no exceptions.
 
 ## Rules
-1. Decompose the user's goal into focused, atomic subtasks.
-2. Delegate each via `delegate_task` — one at a time, sequentially.
-3. Every prompt must be fully self-contained (file paths, line ranges, full context). Sub-agents see nothing else.
-4. Never send vague prompts. Be specific: \"Read src/foo.rs lines 10-30 and summarize the validation logic\".
-5. Synthesize results into a concise final answer (1-3 paragraphs max). For lengthy output, write it directly with `write_file` and include the path in your summary."
+1. Break the goal into focused subtasks. Delegate each via `delegate_task` sequentially.
+2. Prompts must be self-contained — sub-agents have no context. Include file paths, content, and exact instructions.
+3. For follow-up questions, delegate a fresh task — do NOT answer from memory.
+4. For long output (reports, listings, code), tell sub-agents to write results to a file rather than returning inline.
+5. After delegation, synthesize a concise answer (1-3 paragraphs).
+6. Think briefly. Act fast.
+
+## Examples
+- User: \"Write hello to out.txt\" → delegate_task(\"Write the text 'hello' to the file out.txt\")
+- User: \"Search for pub fn in src/\" → delegate_task(\"Search .rs files under src/ for 'pub fn'. List each function name and file.\")
+- User: \"Now count them\" → delegate_task(\"Search .rs files under src/ for 'pub fn'. Return a total count and the top 5 files by count.\")"
     );
     if !memory_index.is_empty() {
         prompt.push_str("\n\n## Stored memories\n");
@@ -50,15 +57,15 @@ fn coordinator_system_prompt(working_dir: &std::path::Path) -> String {
     let dir = working_dir.display();
     format!(
         "\
-You are the coordination layer of a multi-level AI agent. Working directory: {dir}
+You are the coordination layer of a coding AI agent. Working directory: {dir}
 Tools: glob_files, search_files, list_dir, delegate_task.
 
 ## Rules
-1. Search FIRST to locate relevant files before delegating.
-2. If search tools answer the question directly, return the answer — don't delegate trivially.
-3. Delegate specific file operations (read/write/edit) to sub-agents — you lack file I/O tools.
-4. Every delegate_task prompt must be self-contained. Sub-agents see nothing else.
-5. Return a concise synthesis (2 paragraphs max). For lengthy results, delegate writing to a .md file and report the path."
+1. Search FIRST with your own tools. NEVER delegate search/analysis — do it yourself.
+2. Only delegate_task for file I/O (read_file, write_file, edit_file) — you lack those tools.
+3. After search_files returns, format and return results immediately. No re-searching or over-thinking.
+4. delegate_task prompts must be self-contained with full file paths.
+5. Think briefly. Act fast."
     )
 }
 
@@ -66,16 +73,17 @@ fn worker_system_prompt(working_dir: &std::path::Path) -> String {
     let dir = working_dir.display();
     format!(
         "\
-You are the execution layer of a multi-level AI agent. Working directory: {dir}
+You are the execution layer of a coding AI agent. Working directory: {dir}
 You have full file-tool access. No delegation — complete everything yourself.
+Write idiomatic, compact code. Fix root causes, not symptoms.
 
 ## Rules
 1. Execute the task completely. Use read_file, write_file, edit_file, search_files as needed.
 2. Read only what is necessary; write/edit only what is asked.
 3. Sandboxed to {dir}.
 4. On error, report clearly rather than looping.
-5. Return a concise summary (under 500 words). Use file:line references for findings.
-6. For any output longer than ~20 lines (reports, analysis, code, documentation), write it to a .md file under the working directory and return only the file path + a 1-sentence summary. Reserve inline output for short answers only."
+5. For long output (>20 lines), write to a file and return the path + 1-sentence summary.
+6. Return concise summaries (under 500 words). Use file:line references."
     )
 }
 
@@ -85,13 +93,10 @@ You have full file-tool access. No delegation — complete everything yourself.
 /// depth 2+ (worker):     all tools except delegate_task
 pub fn tools_for_depth(all_tools: &[ToolDefinition], depth: usize) -> Vec<ToolDefinition> {
     const COORDINATOR_TOOLS: &[&str] = &["delegate_task", "glob_files", "search_files", "list_dir"];
-    const ORCHESTRATOR_WRITE_TOOLS: &[&str] = &["write_file", "append_file", "edit_file"];
     match depth {
         0 => all_tools
             .iter()
-            .filter(|t| {
-                t.name == "delegate_task" || ORCHESTRATOR_WRITE_TOOLS.contains(&t.name.as_str())
-            })
+            .filter(|t| t.name == "delegate_task")
             .cloned()
             .collect(),
         1 => all_tools
@@ -802,18 +807,15 @@ mod tests {
     }
 
     #[test]
-    fn tools_for_depth_orchestrator_has_delegate_and_write_tools() {
+    fn tools_for_depth_orchestrator_has_only_delegate() {
         use crate::tools::built_in_tool_definitions;
         let all = built_in_tool_definitions();
         let tools = tools_for_depth(&all, 0);
         let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"delegate_task"));
-        assert!(names.contains(&"write_file"));
-        assert!(names.contains(&"append_file"));
-        assert!(names.contains(&"edit_file"));
+        assert!(!names.contains(&"write_file"));
         assert!(!names.contains(&"read_file"));
-        assert!(!names.contains(&"glob_files"));
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 1);
     }
 
     #[test]
