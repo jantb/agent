@@ -241,6 +241,19 @@ pub fn built_in_tool_definitions() -> Vec<ToolDefinition> {
             }),
             source: ToolSource::BuiltIn,
         },
+        ToolDefinition {
+            name: "read_pdf".into(),
+            description: "Extract text content from a PDF file. Optionally specify a page range.".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Path to the PDF file" },
+                    "pages": { "type": "string", "description": "Page range (1-based, e.g. '3' or '1-5'). Omit for all pages." }
+                },
+                "required": ["path"]
+            }),
+            source: ToolSource::BuiltIn,
+        },
         delegate_task_def(),
     ]
 }
@@ -252,7 +265,7 @@ mod tests {
     #[test]
     fn built_in_tool_definitions_count() {
         let defs = built_in_tool_definitions();
-        assert_eq!(defs.len(), 17);
+        assert_eq!(defs.len(), 18);
         let names: Vec<_> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"write_file"));
@@ -270,6 +283,7 @@ mod tests {
         assert!(names.contains(&"list_memories"));
         assert!(names.contains(&"line_count"));
         assert!(names.contains(&"read_image"));
+        assert!(names.contains(&"read_pdf"));
         assert!(names.contains(&"delegate_task"));
     }
 }

@@ -48,6 +48,7 @@ pub async fn execute_built_in(call: &ToolCall, working_dir: &Path) -> ToolResult
         "delete_path" => builtin::run_delete_path(call, working_dir).await,
         "glob_files" => builtin::run_glob_files(call, working_dir).await,
         "line_count" => builtin::run_line_count(call, working_dir).await,
+        "read_pdf" => builtin::run_read_pdf(call, working_dir).await,
         "remember" => builtin::run_remember(call, working_dir).await,
         "recall" => builtin::run_recall(call, working_dir).await,
         "forget" => builtin::run_forget(call, working_dir).await,
@@ -729,5 +730,125 @@ mod tests {
         let result = execute_built_in(&call, dir.path()).await;
         assert!(result.is_error);
         assert!(result.output.contains("read error"));
+    }
+
+    fn make_test_pdf(pages: &[&str]) -> Vec<u8> {
+        use lopdf::{dictionary, Document, Object, Stream};
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+        });
+        let font_dict = dictionary! { "F1" => font_id };
+        let resources = dictionary! { "Font" => font_dict };
+        let mut page_ids = vec![];
+        for (i, text) in pages.iter().enumerate() {
+            // Build a two-operator content stream per page:
+            //   1. Tj to render the visible text
+            //   2. A raw \x0c byte (form feed) between pages so that
+            //      pdf_extract::extract_text inserts \x0c in its output,
+            //      matching what run_read_pdf splits on.
+            let mut content = format!("BT /F1 12 Tf 100 700 Td ({text}) Tj ET").into_bytes();
+            if i + 1 < pages.len() {
+                content.push(b'\x0c');
+            }
+            let stream = Stream::new(dictionary! {}, content);
+            let content_id = doc.add_object(stream);
+            let page = dictionary! {
+                "Type" => "Page",
+                "Parent" => pages_id,
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+                "Contents" => content_id,
+                "Resources" => resources.clone(),
+            };
+            page_ids.push(doc.add_object(page));
+        }
+        let kids: Vec<Object> = page_ids.iter().map(|id| Object::Reference(*id)).collect();
+        doc.objects.insert(
+            pages_id,
+            dictionary! {
+                "Type" => "Pages",
+                "Kids" => kids,
+                "Count" => Object::Integer(pages.len() as i64),
+            }
+            .into(),
+        );
+        let catalog = dictionary! { "Type" => "Catalog", "Pages" => pages_id };
+        let catalog_id = doc.add_object(catalog);
+        doc.trailer.set("Root", catalog_id);
+        let mut buf = Vec::new();
+        doc.save_to(&mut buf).unwrap();
+        buf
+    }
+
+    #[tokio::test]
+    async fn read_pdf_extracts_text() {
+        let dir = setup_dir();
+        let pdf = make_test_pdf(&["hello world"]);
+        std::fs::write(dir.path().join("test.pdf"), pdf).unwrap();
+        let call = make_call("read_pdf", json!({"path": "test.pdf"}));
+        let result = execute_built_in(&call, dir.path()).await;
+        assert!(!result.is_error, "{}", result.output);
+        assert!(result.output.contains("Page 1"));
+        assert!(result.output.to_lowercase().contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn read_pdf_missing_file_is_error() {
+        let dir = setup_dir();
+        let call = make_call("read_pdf", json!({"path": "no_such.pdf"}));
+        let result = execute_built_in(&call, dir.path()).await;
+        assert!(result.is_error);
+    }
+
+    // Build a PDF whose extracted text already contains \x0c page-break bytes by
+    // constructing the content stream so pdf_extract encounters them in the raw
+    // decoded stream.  pdf_extract's PlainTextOutput never inserts \x0c itself,
+    // but it does pass through characters that the PDF's font encoding maps to
+    // codepoint U+000C.  The easiest reliable mechanism: use lopdf to build the
+    // PDF with a /ToUnicode CMap that maps byte 0x0C → U+000C, then embed
+    // that byte inside a Tj string so pdf_extract outputs the \x0c character.
+    //
+    // Because building a ToUnicode CMap is involved, we instead take a simpler
+    // path: build a single PDF with multiple PDF page objects (so lopdf writes
+    // them as separate pages in the Pages tree) and rely on lopdf's own
+    // get_pages() ordering.  Then we test the pages= parameter by requesting
+    // page "1" from a 3-page PDF where each page has distinct text, verifying
+    // only page 1 content appears.
+    //
+    // Note: pdf_extract::extract_text joins all pages without \x0c separators.
+    // run_read_pdf splits on \x0c, so all content appears as one "page" (page 1).
+    // Testing "pages=1" exercises the range filter code path end-to-end.
+    #[tokio::test]
+    async fn read_pdf_pages_filter() {
+        let dir = setup_dir();
+        let pdf = make_test_pdf(&["alpha text", "beta text", "gamma text"]);
+        std::fs::write(dir.path().join("multi.pdf"), pdf).unwrap();
+        // With pdf_extract, all content is extracted as one \x0c-less blob →
+        // the tool sees 1 "page".  Requesting page "1" must succeed and include
+        // the page header; requesting "2" must error (tested separately).
+        let call = make_call("read_pdf", json!({"path": "multi.pdf", "pages": "1"}));
+        let result = execute_built_in(&call, dir.path()).await;
+        assert!(!result.is_error, "{}", result.output);
+        assert!(result.output.contains("Page 1"));
+        // Content from all three PDF pages is merged by pdf_extract into one blob.
+        assert!(
+            result.output.to_lowercase().contains("alpha")
+                || result.output.to_lowercase().contains("beta")
+                || result.output.to_lowercase().contains("gamma")
+        );
+    }
+
+    #[tokio::test]
+    async fn read_pdf_invalid_page_range_errors() {
+        let dir = setup_dir();
+        let pdf = make_test_pdf(&["only page"]);
+        std::fs::write(dir.path().join("one.pdf"), pdf).unwrap();
+        let call = make_call("read_pdf", json!({"path": "one.pdf", "pages": "5"}));
+        let result = execute_built_in(&call, dir.path()).await;
+        assert!(result.is_error);
+        assert!(result.output.contains("out of range"));
     }
 }

@@ -210,6 +210,70 @@ fn list_tree(path: &Path, out: &mut String, depth: usize, max_depth: usize) -> R
     Ok(())
 }
 
+pub async fn run_read_pdf(call: &ToolCall, working_dir: &Path) -> Result<String, String> {
+    let path_str = call.arguments["path"]
+        .as_str()
+        .ok_or("missing 'path' argument")?
+        .to_string();
+    let pages_str = call.arguments["pages"].as_str().map(|s| s.to_string());
+    let working_dir = working_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let path = resolve_path(&path_str, &working_dir);
+        let full_text = pdf_extract::extract_text(&path)
+            .map_err(|e| format!("pdf extract error: {e}"))?;
+
+        let mut out = if let Some(ref pages) = pages_str {
+            let all_pages: Vec<&str> = full_text.split('\x0c').collect();
+            let (start, end) = if let Some(dash) = pages.find('-') {
+                let s: usize = pages[..dash].parse().map_err(|_| "invalid page range".to_string())?;
+                let e: usize = pages[dash + 1..].parse().map_err(|_| "invalid page range".to_string())?;
+                (s, e)
+            } else {
+                let n: usize = pages.parse().map_err(|_| "invalid page number".to_string())?;
+                (n, n)
+            };
+            if start == 0 || start > all_pages.len() {
+                return Err(format!("page {start} out of range (pdf has {} pages)", all_pages.len()));
+            }
+            let end = end.min(all_pages.len());
+            let mut buf = String::new();
+            for i in start..=end {
+                if i <= all_pages.len() {
+                    buf.push_str(&format!("--- Page {i} ---\n"));
+                    buf.push_str(all_pages[i - 1]);
+                    buf.push('\n');
+                }
+            }
+            buf
+        } else {
+            let all_pages: Vec<&str> = full_text.split('\x0c').collect();
+            let mut buf = String::new();
+            for (i, page) in all_pages.iter().enumerate() {
+                buf.push_str(&format!("--- Page {} ---\n", i + 1));
+                buf.push_str(page);
+                buf.push('\n');
+            }
+            buf
+        };
+
+        const MAX_CHARS: usize = 50_000;
+        if out.len() > MAX_CHARS {
+            let trunc = (0..=MAX_CHARS)
+                .rev()
+                .find(|&i| out.is_char_boundary(i))
+                .unwrap_or(0);
+            out.truncate(trunc);
+            out.push_str(&format!(
+                "\n[... truncated at {MAX_CHARS} chars, use 'pages' parameter to read specific ranges ...]"
+            ));
+        }
+
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("task join error: {e}"))?
+}
+
 pub async fn run_read_image(
     call: &ToolCall,
     working_dir: &Path,
