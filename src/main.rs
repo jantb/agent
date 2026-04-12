@@ -25,7 +25,7 @@ use agent::ollama::OllamaClient;
 use agent::script::{self, ScriptCommand, StepReport, StepStatus, TestReport};
 use agent::session::{ensure_gitignore, Session};
 use agent::tools::built_in_tool_definitions;
-use agent::types::{AgentEvent, AgentMode, ChatMessage, MessageKind};
+use agent::types::{AgentEvent, AgentMode, CavemanLevel, ChatMessage, MessageKind};
 use agent::ui;
 
 #[derive(Parser)]
@@ -115,7 +115,8 @@ async fn main() -> anyhow::Result<()> {
     // Load or create session
     let memory_index = memory::build_memory_index(&working_dir);
     let flat = is_flat_model(&cli.model);
-    let sys_prompt = system_prompt_for_depth(0, &working_dir, &memory_index, flat);
+    let sys_prompt =
+        system_prompt_for_depth(0, &working_dir, &memory_index, flat, CavemanLevel::Off);
     let (session, resumed) = match Session::load(&working_dir)? {
         Some(s) => {
             let date = s.updated_at.format("%Y-%m-%d %H:%M").to_string();
@@ -154,6 +155,7 @@ async fn main() -> anyhow::Result<()> {
         session,
         system_prompt: sys_prompt,
         flat,
+        caveman: CavemanLevel::Off,
         mode: AgentMode::default(),
     });
     tokio::spawn(async move { agent_task.run().await });
@@ -165,6 +167,7 @@ async fn main() -> anyhow::Result<()> {
             let mut report = TestReport::new(&cli.model);
             let mut mode = AgentMode::default();
             let mut flat = is_flat_model(&cli.model);
+            let mut caveman = CavemanLevel::Off;
 
             for cmd in &commands {
                 match cmd {
@@ -180,6 +183,29 @@ async fn main() -> anyhow::Result<()> {
                             flat = !flat;
                             println!("[flat] {}", if flat { "on" } else { "off" });
                             action_tx.send(UserAction::ToggleFlat(flat)).await.ok();
+                            loop {
+                                match event_rx.recv().await {
+                                    Some(AgentEvent::TurnDone) | None => break,
+                                    _ => {}
+                                }
+                            }
+                            continue;
+                        }
+                        if text.trim() == "/caveman" {
+                            caveman = caveman.cycle();
+                            println!("[caveman] {}", caveman.label());
+                            action_tx.send(UserAction::SetCaveman(caveman)).await.ok();
+                            loop {
+                                match event_rx.recv().await {
+                                    Some(AgentEvent::TurnDone) | None => break,
+                                    _ => {}
+                                }
+                            }
+                            continue;
+                        }
+                        if text.trim() == "/clear" || text.trim() == "/new" {
+                            println!("[clear]");
+                            action_tx.send(UserAction::ClearHistory).await.ok();
                             loop {
                                 match event_rx.recv().await {
                                     Some(AgentEvent::TurnDone) | None => break,
@@ -844,6 +870,16 @@ async fn handle_slash_or_send(text: String, app: &mut App, action_tx: &mpsc::Sen
         });
         if let Err(e) = action_tx.send(UserAction::ToggleFlat(app.flat)).await {
             tracing::error!("failed to send ToggleFlat action: {e}");
+        }
+    } else if text.trim() == "/caveman" {
+        app.caveman = app.caveman.cycle();
+        app.messages.push(ChatMessage {
+            role: agent::types::Role::Assistant,
+            content: format!("Caveman: {}", app.caveman.label()),
+            kind: MessageKind::Text,
+        });
+        if let Err(e) = action_tx.send(UserAction::SetCaveman(app.caveman)).await {
+            tracing::error!("failed to send SetCaveman action: {e}");
         }
     } else {
         let images = app.take_pending_images();

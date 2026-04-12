@@ -528,7 +528,7 @@ fn draw_autocomplete(frame: &mut Frame, ac: &crate::autocomplete::Autocomplete, 
     if ac.filtered.is_empty() {
         return;
     }
-    let max_visible = 6;
+    let max_visible = 10;
     let count = ac.filtered.len().min(max_visible);
     let popup_height = count as u16 + 2;
     let popup_width = 35u16.min(input_area.width);
@@ -767,6 +767,14 @@ fn draw_status(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     if app.flat {
         right_spans.push(Span::styled("flat", Style::default().fg(Color::Magenta)));
+        right_spans.push(Span::raw("  "));
+    }
+
+    if app.caveman.is_active() {
+        right_spans.push(Span::styled(
+            format!("caveman:{}", app.caveman.label()),
+            Style::default().fg(Color::Yellow),
+        ));
         right_spans.push(Span::raw("  "));
     }
 

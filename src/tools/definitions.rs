@@ -19,6 +19,10 @@ Do NOT use for trivial single-step operations."
                 "prompt": {
                     "type": "string",
                     "description": "Complete, self-contained task description. Include every file path, line range, and context the sub-agent needs. The sub-agent cannot see your conversation history."
+                },
+                "system_prompt": {
+                    "type": "string",
+                    "description": "Optional extra instructions appended to the sub-agent's system prompt. The base prompt (sandbox rules, tool docs) is always auto-computed — this adds your specialization on top."
                 }
             },
             "required": ["prompt"]
@@ -311,5 +315,20 @@ mod tests {
         assert!(names.contains(&"read_image"));
         assert!(names.contains(&"read_pdf"));
         assert!(names.contains(&"delegate_task"));
+    }
+
+    #[test]
+    fn delegate_task_has_system_prompt_param() {
+        let def = delegate_task_def();
+        let props = def.parameters.get("properties").unwrap();
+        assert!(props.get("system_prompt").is_some(), "delegate_task should have system_prompt property");
+    }
+
+    #[test]
+    fn delegate_task_system_prompt_not_required() {
+        let def = delegate_task_def();
+        let required = def.parameters.get("required").unwrap().as_array().unwrap();
+        let has_system_prompt = required.iter().any(|v| v.as_str() == Some("system_prompt"));
+        assert!(!has_system_prompt, "system_prompt should not be required");
     }
 }

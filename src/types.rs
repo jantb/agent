@@ -46,7 +46,7 @@ pub struct ToolDefinition {
     pub source: ToolSource,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolSource {
     BuiltIn,
     Mcp,
@@ -192,6 +192,40 @@ mod tests {
     fn agent_mode_default_is_plan() {
         assert_eq!(AgentMode::default(), AgentMode::Plan);
     }
+
+    #[test]
+    fn caveman_level_cycle_full_loop() {
+        let c = CavemanLevel::Off;
+        let c = c.cycle();
+        assert_eq!(c, CavemanLevel::Lite);
+        let c = c.cycle();
+        assert_eq!(c, CavemanLevel::Full);
+        let c = c.cycle();
+        assert_eq!(c, CavemanLevel::Ultra);
+        let c = c.cycle();
+        assert_eq!(c, CavemanLevel::Off);
+    }
+
+    #[test]
+    fn caveman_level_labels() {
+        assert_eq!(CavemanLevel::Off.label(), "off");
+        assert_eq!(CavemanLevel::Lite.label(), "lite");
+        assert_eq!(CavemanLevel::Full.label(), "full");
+        assert_eq!(CavemanLevel::Ultra.label(), "ultra");
+    }
+
+    #[test]
+    fn caveman_level_default_is_off() {
+        assert_eq!(CavemanLevel::default(), CavemanLevel::Off);
+    }
+
+    #[test]
+    fn caveman_level_is_active() {
+        assert!(!CavemanLevel::Off.is_active());
+        assert!(CavemanLevel::Lite.is_active());
+        assert!(CavemanLevel::Full.is_active());
+        assert!(CavemanLevel::Ultra.is_active());
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -247,5 +281,38 @@ impl AgentMode {
             Self::Thorough => "thorough",
             Self::Oneshot => "oneshot",
         }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum CavemanLevel {
+    #[default]
+    Off,
+    Lite,
+    Full,
+    Ultra,
+}
+
+impl CavemanLevel {
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Off => Self::Lite,
+            Self::Lite => Self::Full,
+            Self::Full => Self::Ultra,
+            Self::Ultra => Self::Off,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Lite => "lite",
+            Self::Full => "full",
+            Self::Ultra => "ultra",
+        }
+    }
+
+    pub fn is_active(self) -> bool {
+        self != Self::Off
     }
 }
