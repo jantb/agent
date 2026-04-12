@@ -173,7 +173,8 @@ async fn main() -> anyhow::Result<()> {
                         let action = if let Some(topic) = text.trim().strip_prefix("/interview") {
                             let topic = topic.trim();
                             let topic = if topic.is_empty() { "general" } else { topic };
-                            interview_state = Some(InterviewState::new(topic.to_string(), &working_dir));
+                            interview_state =
+                                Some(InterviewState::new(topic.to_string(), &working_dir));
                             UserAction::StartInterview(topic.to_string())
                         } else {
                             UserAction::SendMessage(text.clone(), vec![])

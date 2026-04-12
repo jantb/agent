@@ -287,37 +287,38 @@ fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                     ]));
                 }
             }
-            MessageKind::SubtaskEnter { depth, label } => {
-                let indent = "─".repeat((*depth * 2).min(area.width as usize / 2));
-                let prefix = format!("  {indent}▶ ");
-                let prefix_w = prefix.chars().count();
-                let label_w = (area.width as usize).saturating_sub(prefix_w);
-                let cont_indent = " ".repeat(prefix_w);
-                for (i, seg) in word_wrap(label, label_w).into_iter().enumerate() {
-                    if i == 0 {
-                        lines.push(Line::from(vec![
-                            Span::styled(prefix.clone(), Style::default().fg(Color::Cyan)),
-                            Span::styled(
-                                seg,
-                                Style::default()
-                                    .fg(Color::Cyan)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                        ]));
-                    } else {
-                        lines.push(Line::from(Span::styled(
-                            format!("{cont_indent}{seg}"),
-                            Style::default()
-                                .fg(Color::Cyan)
-                                .add_modifier(Modifier::BOLD),
-                        )));
+            MessageKind::SubtaskEnter { label, .. } => {
+                // Separator before enter if a prior subtask just exited
+                if msg_idx > 0 {
+                    let has_prior_exit = app.messages[..msg_idx].iter().rev()
+                        .take_while(|m| !matches!(m.kind, MessageKind::SubtaskEnter { .. }))
+                        .any(|m| matches!(m.kind, MessageKind::SubtaskExit { .. }));
+                    if has_prior_exit {
+                        lines.push(Line::from(""));
                     }
                 }
+                let prefix = "──▶ ";
+                let prefix_w = prefix.chars().count();
+                let label_trunc = truncate(label, (area.width as usize).saturating_sub(prefix_w + 1));
+                let used = prefix_w + label_trunc.chars().count() + 1;
+                let filler = "─".repeat((area.width as usize).saturating_sub(used));
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(Color::Cyan)),
+                    Span::styled(
+                        label_trunc,
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(" {filler}"),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                ]));
             }
-            MessageKind::SubtaskExit { depth } => {
-                let indent = "─".repeat((*depth * 2).min(area.width as usize / 2));
+            MessageKind::SubtaskExit { .. } => {
+                let prefix = "──◀ done ";
+                let filler = "─".repeat((area.width as usize).saturating_sub(prefix.chars().count()));
                 lines.push(Line::from(Span::styled(
-                    format!("  {indent}◀ done"),
+                    format!("{prefix}{filler}"),
                     Style::default().fg(Color::DarkGray),
                 )));
             }
@@ -1216,5 +1217,132 @@ mod tests {
     #[test]
     fn word_wrap_empty_string() {
         assert_eq!(word_wrap("", 10), vec![""]);
+    }
+
+    #[test]
+    fn diagnose_subtask_rendering() {
+        use ratatui::backend::TestBackend;
+        use ratatui::style::Color;
+        use ratatui::Terminal;
+
+        let mut app = crate::app::App::new("model".into(), std::path::PathBuf::from("."));
+        app.start_assistant_turn();
+
+        // First subtask
+        app.enter_subtask(1, "first task: read and summarize".into());
+        app.add_tool_call(&crate::types::ToolCall {
+            id: "c1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "test.txt"}),
+        });
+        app.add_tool_result(&crate::types::ToolResult {
+            call_id: "c1".into(),
+            output: "file contents here".into(),
+            is_error: false,
+            images: vec![],
+        });
+        app.exit_subtask(1);
+
+        // Orchestrator delegate_task result + next call
+        app.add_tool_result(&crate::types::ToolResult {
+            call_id: "d1".into(),
+            output: "subtask 1 done".into(),
+            is_error: false,
+            images: vec![],
+        });
+        app.add_tool_call(&crate::types::ToolCall {
+            id: "d2".into(),
+            name: "delegate_task".into(),
+            arguments: serde_json::json!({"prompt": "second task"}),
+        });
+
+        // Second subtask
+        app.enter_subtask(1, "second task: write output".into());
+        app.add_tool_call(&crate::types::ToolCall {
+            id: "c2".into(),
+            name: "write_file".into(),
+            arguments: serde_json::json!({"path": "out.txt"}),
+        });
+        app.add_tool_result(&crate::types::ToolResult {
+            call_id: "c2".into(),
+            output: "ok".into(),
+            is_error: false,
+            images: vec![],
+        });
+        app.exit_subtask(1);
+
+        let backend = TestBackend::new(100, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let chat_start = TREE_PANEL_WIDTH;
+        let chat_end = 100u16;
+
+        // Dump every row with text and color info
+        println!("\n=== RENDERED BUFFER (chat area cols {}..{}) ===", chat_start, chat_end);
+        for row in 0..40u16 {
+            let text = row_text(&buffer, row, chat_start, chat_end);
+            if text.trim().is_empty() {
+                println!("row {:2}: [blank]", row);
+                continue;
+            }
+            // Check colors on this row
+            let mut colors: Vec<String> = Vec::new();
+            let mut prev_fg: Option<Color> = None;
+            for col in chat_start..chat_end {
+                if let Some(cell) = buffer.cell(ratatui::layout::Position::new(col, row)) {
+                    let fg = cell.fg;
+                    if prev_fg != Some(fg) {
+                        colors.push(format!("c{}:{:?}", col, fg));
+                        prev_fg = Some(fg);
+                    }
+                }
+            }
+            println!("row {:2}: |{}|  colors: {}", row, text.trim_end(), colors.join(", "));
+        }
+        println!("=== END ===\n");
+
+        // Find SubtaskEnter rows and check cyan coverage
+        let enter_rows: Vec<u16> = (0..40u16)
+            .filter(|&r| row_text(&buffer, r, chat_start, chat_end).contains('▶'))
+            .collect();
+        println!("SubtaskEnter rows: {:?}", enter_rows);
+
+        for &row in &enter_rows {
+            let mut non_cyan = Vec::new();
+            for col in chat_start..chat_end {
+                if let Some(cell) = buffer.cell(ratatui::layout::Position::new(col, row)) {
+                    if cell.fg != Color::Cyan {
+                        non_cyan.push((col, cell.fg, cell.symbol().to_string()));
+                    }
+                }
+            }
+            if !non_cyan.is_empty() {
+                println!("Row {} non-cyan cells: {:?}", row, non_cyan);
+            } else {
+                println!("Row {} is all cyan", row);
+            }
+        }
+
+        // Find SubtaskExit rows
+        let exit_rows: Vec<u16> = (0..40u16)
+            .filter(|&r| row_text(&buffer, r, chat_start, chat_end).contains('◀'))
+            .collect();
+        println!("SubtaskExit rows: {:?}", exit_rows);
+
+        // Check for separator between first exit and second enter
+        if enter_rows.len() >= 2 && !exit_rows.is_empty() {
+            let first_exit = exit_rows[0];
+            let second_enter = enter_rows[1];
+            println!(
+                "Gap between first exit (row {}) and second enter (row {}): {} rows",
+                first_exit, second_enter, second_enter - first_exit
+            );
+            for r in first_exit..=second_enter {
+                let text = row_text(&buffer, r, chat_start, chat_end);
+                println!("  row {}: |{}|", r, text.trim_end());
+            }
+        }
     }
 }
