@@ -1,0 +1,22 @@
+# Mode integration test: Plan → Oneshot → Plan
+# Default mode is Plan. Tests cycling and that correct mode applies.
+
+# Phase 1: Plan mode (default) — must ask questions before action
+I want to design a new API. What technology stack and architecture should we use?
+@expect_event InterviewQuestion
+@expect_event TurnDone
+
+# Phase 2: Switch to Thorough, then Oneshot
+/mode
+/mode
+# Now in Oneshot — execute directly, no questions
+Write the text 'oneshot works' to mode_test_oneshot.txt
+@expect_no_event InterviewQuestion
+@expect_event TurnDone
+@expect_file mode_test_oneshot.txt oneshot works
+
+# Phase 3: Cycle back to Plan mode
+/mode
+I need to refactor the database layer. Help me plan it.
+@expect_event InterviewQuestion
+@expect_event TurnDone

@@ -1,0 +1,8 @@
+# Plan mode workflow test
+# Default mode is Plan. Verifies the Clarify → Plan → Execute workflow.
+# Headless auto-answers interview questions with first suggestion.
+
+# Deliberately ambiguous task to trigger mandatory clarification phase
+I want to set up a new project structure with proper module organization. Help me design it.
+@expect_event InterviewQuestion
+@expect_event TurnDone

@@ -1,0 +1,15 @@
+# Flat mode toggle test
+# Switch to Oneshot to avoid interview questions, then toggle flat
+/mode
+/mode
+
+# Toggle flat mode on
+/flat
+
+# In flat mode, the agent should complete work itself (no delegation)
+Write the text 'flat works' to flat_test.txt
+@expect_event TurnDone
+@expect_file flat_test.txt flat works
+
+# Toggle flat mode off
+/flat

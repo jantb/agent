@@ -143,8 +143,8 @@ Ask for approval or changes before you proceed.\n\
 If the user answers \"[DONE]\", move to the next phase immediately.";
 
 const THOROUGH_PROMPT_APPENDIX: &str = "\n\n## Thorough mode\n\
-You have the `interview_question` tool. Use it proactively — ask about any ambiguity, \
-unclear requirements, or choices with significant implementation impact. \
+You have the `interview_question` tool. You MUST call it at least once before doing any work — \
+ask about any ambiguity, unclear requirements, or choices with significant implementation impact. \
 Do not default to assumptions when you could ask. Prefer asking over guessing. \
 If the user answers \"[DONE]\", stop asking and proceed.";
 
@@ -266,6 +266,7 @@ pub enum UserAction {
     Quit,
     ClearHistory,
     ChangeModel(String),
+    ToggleFlat(bool),
 }
 
 enum TurnPhaseResult {
@@ -566,7 +567,8 @@ impl AgentTask {
         })
         .await;
 
-        let child_tools = tools_for_depth(&self.all_tools, child_depth, self.flat, AgentMode::Oneshot);
+        let child_tools =
+            tools_for_depth(&self.all_tools, child_depth, self.flat, AgentMode::Oneshot);
         let child_system = system_prompt_for_depth(child_depth, &self.working_dir, "", self.flat);
         let mut child_session = Session::new("subtask", &self.working_dir);
         child_session.append_message(SessionMessage::Text {
@@ -713,24 +715,36 @@ impl AgentTask {
                 }
                 UserAction::ChangeModel(model) => {
                     self.flat = is_flat_model(&model);
-                    self.tools =
-                        tools_for_depth(&self.all_tools, self.depth, self.flat, self.mode);
+                    self.tools = tools_for_depth(&self.all_tools, self.depth, self.flat, self.mode);
                     let idx = memory::build_memory_index(&self.working_dir);
                     self.system_prompt =
                         system_prompt_for_depth(self.depth, &self.working_dir, &idx, self.flat);
                     match self.mode {
                         AgentMode::Plan => self.system_prompt.push_str(PLAN_PROMPT_APPENDIX),
-                        AgentMode::Thorough => self.system_prompt.push_str(THOROUGH_PROMPT_APPENDIX),
+                        AgentMode::Thorough => {
+                            self.system_prompt.push_str(THOROUGH_PROMPT_APPENDIX)
+                        }
                         AgentMode::Oneshot => {}
                     }
                     self.ollama.set_model(model);
                     self.emit(AgentEvent::TurnDone).await;
                 }
-                UserAction::SendMessage {
-                    text,
-                    images,
-                    mode,
-                } => {
+                UserAction::ToggleFlat(new_flat) => {
+                    self.flat = new_flat;
+                    self.tools = tools_for_depth(&self.all_tools, self.depth, self.flat, self.mode);
+                    let idx = memory::build_memory_index(&self.working_dir);
+                    self.system_prompt =
+                        system_prompt_for_depth(self.depth, &self.working_dir, &idx, self.flat);
+                    match self.mode {
+                        AgentMode::Plan => self.system_prompt.push_str(PLAN_PROMPT_APPENDIX),
+                        AgentMode::Thorough => {
+                            self.system_prompt.push_str(THOROUGH_PROMPT_APPENDIX)
+                        }
+                        AgentMode::Oneshot => {}
+                    }
+                    self.emit(AgentEvent::TurnDone).await;
+                }
+                UserAction::SendMessage { text, images, mode } => {
                     if mode != self.mode {
                         self.mode = mode;
                         self.tools =
@@ -740,7 +754,9 @@ impl AgentTask {
                             system_prompt_for_depth(self.depth, &self.working_dir, &idx, self.flat);
                         match self.mode {
                             AgentMode::Plan => self.system_prompt.push_str(PLAN_PROMPT_APPENDIX),
-                            AgentMode::Thorough => self.system_prompt.push_str(THOROUGH_PROMPT_APPENDIX),
+                            AgentMode::Thorough => {
+                                self.system_prompt.push_str(THOROUGH_PROMPT_APPENDIX)
+                            }
                             AgentMode::Oneshot => {}
                         }
                     }
@@ -1082,6 +1098,53 @@ mod tests {
         let tools = tools_for_depth(&all, 2, false, AgentMode::Thorough);
         let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(!names.contains(&"interview_question"));
+    }
+
+    #[test]
+    fn plan_mode_adds_interview_question_at_depth_0() {
+        use crate::tools::built_in_tool_definitions;
+        let all = built_in_tool_definitions();
+        let tools = tools_for_depth(&all, 0, false, AgentMode::Plan);
+        let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"delegate_task"));
+        assert!(names.contains(&"interview_question"));
+    }
+
+    #[test]
+    fn plan_mode_no_interview_at_depth_2() {
+        use crate::tools::built_in_tool_definitions;
+        let all = built_in_tool_definitions();
+        let tools = tools_for_depth(&all, 2, false, AgentMode::Plan);
+        let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(!names.contains(&"interview_question"));
+    }
+
+    #[test]
+    fn oneshot_no_interview_any_depth() {
+        use crate::tools::built_in_tool_definitions;
+        let all = built_in_tool_definitions();
+        for depth in 0..3 {
+            let tools = tools_for_depth(&all, depth, false, AgentMode::Oneshot);
+            let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
+            assert!(
+                !names.contains(&"interview_question"),
+                "depth {depth} should not have interview_question in Oneshot"
+            );
+        }
+    }
+
+    #[test]
+    fn plan_prompt_contains_three_phases() {
+        assert!(PLAN_PROMPT_APPENDIX.contains("interview_question"));
+        assert!(PLAN_PROMPT_APPENDIX.contains("Clarify"));
+        assert!(PLAN_PROMPT_APPENDIX.contains("Plan"));
+        assert!(PLAN_PROMPT_APPENDIX.contains("Execute"));
+    }
+
+    #[test]
+    fn thorough_prompt_contains_must_call() {
+        assert!(THOROUGH_PROMPT_APPENDIX.contains("interview_question"));
+        assert!(THOROUGH_PROMPT_APPENDIX.contains("MUST call it"));
     }
 
     #[test]

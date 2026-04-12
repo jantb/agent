@@ -20,7 +20,10 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "/model",
         desc: "Switch Ollama model",
     },
-    SlashCommand { name: "/mode", desc: "Cycle mode: plan → thorough → oneshot" },
+    SlashCommand {
+        name: "/mode",
+        desc: "Cycle mode: plan → thorough → oneshot",
+    },
 ];
 
 pub struct Autocomplete {

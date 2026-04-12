@@ -1,0 +1,6 @@
+# Thorough mode test — fresh session, must ask at least one question
+/mode
+# Now in Thorough mode. Must ask before doing work.
+I need to add authentication to a project. How should we implement it?
+@expect_event InterviewQuestion
+@expect_event TurnDone

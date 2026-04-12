@@ -28,9 +28,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
             0
         };
     let paste_tag_len = if let Some(p) = &app.input.pasted {
-        format!("[{} lines pasted] ", p.lines().count())
-            .chars()
-            .count()
+        let tag = if p.contains('\n') {
+            format!("[{} lines pasted] ", p.lines().count())
+        } else {
+            format!("[{} chars pasted] ", p.chars().count())
+        };
+        tag.chars().count()
     } else {
         0
     };
@@ -423,8 +426,11 @@ fn draw_input(
         format!("❯ {queue_tag}")
     };
     let paste_tag = if let Some(pasted) = &app.input.pasted {
-        let n = pasted.lines().count();
-        format!("[{n} lines pasted] ")
+        if pasted.contains('\n') {
+            format!("[{} lines pasted] ", pasted.lines().count())
+        } else {
+            format!("[{} chars pasted] ", pasted.chars().count())
+        }
     } else {
         String::new()
     };
@@ -758,6 +764,11 @@ fn draw_status(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     };
 
     let mut right_spans: Vec<Span> = Vec::new();
+
+    if app.flat {
+        right_spans.push(Span::styled("flat", Style::default().fg(Color::Magenta)));
+        right_spans.push(Span::raw("  "));
+    }
 
     if app.mode != AgentMode::Oneshot {
         right_spans.push(Span::styled(

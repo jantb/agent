@@ -1,0 +1,10 @@
+# Oneshot mode test — verify NO interview questions are asked.
+# Cycle twice: Plan → Thorough → Oneshot
+/mode
+/mode
+
+# Concrete task in Oneshot — should execute without asking
+Write 'no questions asked' to oneshot_verify.txt
+@expect_no_event InterviewQuestion
+@expect_event TurnDone
+@expect_file oneshot_verify.txt no questions asked

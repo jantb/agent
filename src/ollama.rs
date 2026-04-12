@@ -9,7 +9,7 @@ use tracing::{debug, trace, warn};
 
 use crate::types::{AgentEvent, Message, Role, ToolCall, ToolDefinition, TurnOutcome};
 
-pub const NUM_CTX: u64 = 32_768;
+pub const NUM_CTX: u64 = 65_536;
 
 static CALL_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 

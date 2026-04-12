@@ -29,8 +29,14 @@ impl InputState {
         self.pasted.is_none() && self.text.is_empty()
     }
 
+    /// Threshold (in chars) above which a single-line paste is stored compactly
+    /// in `pasted` instead of inlined into `text`.
+    const PASTE_COMPACT_THRESHOLD: usize = 200;
+
     pub fn insert_paste(&mut self, content: String) {
-        if content.contains('\n') {
+        let multiline = content.contains('\n');
+        let long_single = !multiline && content.chars().count() > Self::PASTE_COMPACT_THRESHOLD;
+        if multiline || long_single {
             let before = self.text[..self.cursor_pos].to_string();
             let after = self.text[self.cursor_pos..].to_string();
             self.pasted = Some(if before.is_empty() {

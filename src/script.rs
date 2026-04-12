@@ -16,6 +16,8 @@ pub enum ScriptCommand {
     ExpectNoFile(String),
     /// Assert that a named event appeared in the most recent step's event log.
     ExpectEvent(String),
+    /// Assert that a named event did NOT appear in the most recent step's event log.
+    ExpectNoEvent(String),
     ExpectStat {
         lhs: String,
         op: String,
@@ -48,6 +50,8 @@ pub fn parse_script(path: &Path) -> Result<Vec<ScriptCommand>> {
             });
         } else if let Some(rest) = line.strip_prefix("@expect_no_file ") {
             cmds.push(ScriptCommand::ExpectNoFile(rest.trim().to_owned()));
+        } else if let Some(rest) = line.strip_prefix("@expect_no_event ") {
+            cmds.push(ScriptCommand::ExpectNoEvent(rest.trim().to_owned()));
         } else if let Some(rest) = line.strip_prefix("@expect_event ") {
             cmds.push(ScriptCommand::ExpectEvent(rest.trim().to_owned()));
         } else if let Some(rest) = line.strip_prefix("@expect_stat ") {
@@ -289,6 +293,15 @@ mod tests {
             ScriptCommand::ExpectStat { lhs, op, rhs }
             if lhs == "orchestrator_prompt_max" && op == "<" && rhs == "subtask_prompt_max"
         ));
+    }
+
+    #[test]
+    fn parses_expect_no_event() {
+        let cmds = parse_str("@expect_no_event InterviewQuestion");
+        assert_eq!(
+            cmds,
+            vec![ScriptCommand::ExpectNoEvent("InterviewQuestion".into())]
+        );
     }
 
     #[test]

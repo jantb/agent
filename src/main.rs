@@ -49,7 +49,6 @@ impl Drop for TerminalGuard {
         let _ = crossterm::execute!(
             std::io::stdout(),
             crossterm::event::DisableBracketedPaste,
-            crossterm::event::DisableMouseCapture,
             LeaveAlternateScreen
         );
     }
@@ -165,6 +164,7 @@ async fn main() -> anyhow::Result<()> {
             let commands = script::parse_script(script_path)?;
             let mut report = TestReport::new(&cli.model);
             let mut mode = AgentMode::default();
+            let mut flat = is_flat_model(&cli.model);
 
             for cmd in &commands {
                 match cmd {
@@ -176,8 +176,28 @@ async fn main() -> anyhow::Result<()> {
                             println!("[mode] {}", mode.label());
                             continue;
                         }
+                        if text.trim() == "/flat" {
+                            flat = !flat;
+                            println!("[flat] {}", if flat { "on" } else { "off" });
+                            action_tx.send(UserAction::ToggleFlat(flat)).await.ok();
+                            loop {
+                                match event_rx.recv().await {
+                                    Some(AgentEvent::TurnDone) | None => break,
+                                    _ => {}
+                                }
+                            }
+                            continue;
+                        }
+                        let send_text = if text.chars().count() > 2000 {
+                            match save_context_file(&working_dir, text) {
+                                Some(ref_text) => ref_text,
+                                None => text.clone(),
+                            }
+                        } else {
+                            text.clone()
+                        };
                         let action = UserAction::SendMessage {
-                            text: text.clone(),
+                            text: send_text,
                             images: vec![],
                             mode,
                         };
@@ -300,6 +320,36 @@ async fn main() -> anyhow::Result<()> {
                             report.add_assertion(result);
                         }
                     }
+                    ScriptCommand::ExpectNoEvent(event_name) => {
+                        let Some(last_step) = report.steps.last() else {
+                            report.add_assertion(script::AssertionResult {
+                                assert_type: "expect_no_event".into(),
+                                path: event_name.clone(),
+                                expected: format!("no {event_name}"),
+                                actual: "no prior step".into(),
+                                pass: true,
+                            });
+                            continue;
+                        };
+                        let found = last_step
+                            .events
+                            .iter()
+                            .any(|e| e.contains(event_name.as_str()));
+                        let pass = !found;
+                        let pass_str = if pass { "PASS" } else { "FAIL" };
+                        println!("[assert] {pass_str} expect_no_event {event_name}");
+                        report.add_assertion(script::AssertionResult {
+                            assert_type: "expect_no_event".into(),
+                            path: event_name.clone(),
+                            expected: format!("no {event_name}"),
+                            actual: if found {
+                                event_name.clone()
+                            } else {
+                                String::new()
+                            },
+                            pass,
+                        });
+                    }
                     ScriptCommand::ExpectEvent(event_name) => {
                         let Some(last_step) = report.steps.last() else {
                             println!("[assert] FAIL expect_event {event_name} — no Send step preceding this assertion");
@@ -388,6 +438,7 @@ async fn main() -> anyhow::Result<()> {
 
     // --- Build App (TUI modes) ---
     let mut app = App::new(cli.model.clone(), working_dir.clone());
+    app.flat = flat;
     app.context_window_size = context_window;
     app.mcp_connected = mcp_connected;
     app.mcp_failed = mcp_failed;
@@ -403,7 +454,6 @@ async fn main() -> anyhow::Result<()> {
     crossterm::execute!(
         std::io::stdout(),
         EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture,
         crossterm::event::EnableBracketedPaste
     )?;
     let _guard = TerminalGuard;
@@ -442,6 +492,7 @@ async fn main() -> anyhow::Result<()> {
                     ScriptCommand::ExpectFile { .. }
                     | ScriptCommand::ExpectNoFile(_)
                     | ScriptCommand::ExpectEvent(_)
+                    | ScriptCommand::ExpectNoEvent(_)
                     | ScriptCommand::ExpectStat { .. } => {
                         tracing::info!("script assertion skipped in TUI mode");
                     }
@@ -779,8 +830,31 @@ async fn handle_slash_or_send(text: String, app: &mut App, action_tx: &mpsc::Sen
             content: format!("Mode: {}", app.mode.label()),
             kind: MessageKind::Text,
         });
+    } else if text.trim() == "/flat" {
+        app.flat = !app.flat;
+        let label = if app.flat {
+            "flat (single-level)"
+        } else {
+            "hierarchical (multi-level)"
+        };
+        app.messages.push(ChatMessage {
+            role: agent::types::Role::Assistant,
+            content: format!("Mode: {label}"),
+            kind: MessageKind::Text,
+        });
+        if let Err(e) = action_tx.send(UserAction::ToggleFlat(app.flat)).await {
+            tracing::error!("failed to send ToggleFlat action: {e}");
+        }
     } else {
         let images = app.take_pending_images();
+        let text = if text.chars().count() > 2000 {
+            match save_context_file(&app.working_dir, &text) {
+                Some(ref_text) => ref_text,
+                None => text,
+            }
+        } else {
+            text
+        };
         app.add_user_message(text.clone());
         app.start_assistant_turn();
         if let Err(e) = action_tx
@@ -794,6 +868,27 @@ async fn handle_slash_or_send(text: String, app: &mut App, action_tx: &mpsc::Sen
             tracing::error!("failed to send SendMessage action: {e}");
         }
     }
+}
+
+/// Save long text to a context file and return a reference message.
+/// Returns None if writing fails.
+fn save_context_file(working_dir: &std::path::Path, text: &str) -> Option<String> {
+    let ctx_dir = working_dir.join(".agent").join("context");
+    std::fs::create_dir_all(&ctx_dir).ok()?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let filename = format!("ctx-{ts}.txt");
+    let path = ctx_dir.join(&filename);
+    std::fs::write(&path, text).ok()?;
+    let lines = text.lines().count();
+    let chars = text.chars().count();
+    let rel_path = format!(".agent/context/{filename}");
+    Some(format!(
+        "[Long text saved to {rel_path} — {chars} chars, {lines} lines]\n\n\
+         Read the file at `{rel_path}` to see the full content, then respond to the user's request."
+    ))
 }
 
 async fn handle_agent_event(

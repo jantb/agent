@@ -1,0 +1,27 @@
+# Memory lifecycle test: remember → recall → list → forget → verify
+# Runs in Oneshot mode to avoid interview questions slowing things down.
+/mode
+/mode
+
+# Step 1: Store a memory
+Remember this: name=test-license, description=Project license info, tags=legal, content=This project uses the MIT license.
+@expect_event ToolRequested
+@expect_event TurnDone
+
+# Step 2: Recall it by keyword
+Recall memories about license
+@expect_event ToolRequested
+@expect_event TurnDone
+
+# Step 3: List all memories
+List all stored memories
+@expect_event ToolRequested
+@expect_event TurnDone
+
+# Step 4: Forget the memory
+Forget the memory named test-license
+@expect_event ToolRequested
+@expect_event TurnDone
+
+# Step 5: Verify file is gone
+@expect_no_file .agent/memory/test-license.md

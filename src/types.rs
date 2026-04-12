@@ -169,6 +169,29 @@ mod tests {
         assert!(msg.tool_calls.is_empty());
         assert!(msg.content.is_empty());
     }
+
+    #[test]
+    fn agent_mode_cycle_full_loop() {
+        let m = AgentMode::Plan;
+        let m = m.cycle();
+        assert_eq!(m, AgentMode::Thorough);
+        let m = m.cycle();
+        assert_eq!(m, AgentMode::Oneshot);
+        let m = m.cycle();
+        assert_eq!(m, AgentMode::Plan);
+    }
+
+    #[test]
+    fn agent_mode_labels() {
+        assert_eq!(AgentMode::Plan.label(), "plan");
+        assert_eq!(AgentMode::Thorough.label(), "thorough");
+        assert_eq!(AgentMode::Oneshot.label(), "oneshot");
+    }
+
+    #[test]
+    fn agent_mode_default_is_plan() {
+        assert_eq!(AgentMode::default(), AgentMode::Plan);
+    }
 }
 
 #[derive(Debug, Clone)]
