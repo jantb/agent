@@ -14,5 +14,5 @@ pub(crate) static IGNORE_DIRS: &[&str] = &[
     ".vscode",
 ];
 
-pub use definitions::{built_in_tool_definitions, delegate_task_def};
+pub use definitions::{built_in_tool_definitions, delegate_task_def, interview_question_def};
 pub use dispatch::execute_built_in;

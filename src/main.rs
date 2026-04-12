@@ -12,8 +12,10 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use agent::agent::{system_prompt_for_depth, AgentTask, AgentTaskConfig, UserAction};
-use agent::app::{App, ModelPickerState};
+use agent::agent::{
+    is_flat_model, system_prompt_for_depth, AgentTask, AgentTaskConfig, UserAction,
+};
+use agent::app::{App, InterviewPickerState, InterviewState, ModelPickerState};
 use agent::autocomplete;
 use agent::config;
 use agent::keys;
@@ -113,7 +115,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Load or create session
     let memory_index = memory::build_memory_index(&working_dir);
-    let sys_prompt = system_prompt_for_depth(0, &working_dir, &memory_index);
+    let flat = is_flat_model(&cli.model);
+    let sys_prompt = system_prompt_for_depth(0, &working_dir, &memory_index, flat);
     let (session, resumed) = match Session::load(&working_dir)? {
         Some(s) => {
             let date = s.updated_at.format("%Y-%m-%d %H:%M").to_string();
@@ -151,6 +154,7 @@ async fn main() -> anyhow::Result<()> {
         action_rx,
         session,
         system_prompt: sys_prompt,
+        flat,
     });
     tokio::spawn(async move { agent_task.run().await });
 
@@ -239,6 +243,12 @@ async fn main() -> anyhow::Result<()> {
                                             println!("[subtask_exit] depth={depth}");
                                             log.push(format!("SubtaskExit: depth={depth}"));
                                             current_depth = depth.saturating_sub(1);
+                                        }
+                                        Some(AgentEvent::InterviewQuestion { question, suggestions, answer_tx }) => {
+                                            let answer = suggestions.into_iter().next().unwrap_or_else(|| "yes".into());
+                                            println!("[interview] Q: {question} -> A: {answer}");
+                                            log.push(format!("InterviewQuestion: {question}"));
+                                            let _ = answer_tx.0.send(answer);
                                         }
                                         None => {
                                             return (StepStatus::Failed("channel closed".into()), log, orch_prompt_max, subtask_prompt_max, total_eval);
@@ -501,6 +511,62 @@ async fn handle_terminal_event(
 async fn apply_command(cmd: keys::UiCommand, app: &mut App, action_tx: &mpsc::Sender<UserAction>) {
     use keys::UiCommand;
 
+    // Interview picker active: intercept keys
+    if app.interview_picker.is_some() {
+        match cmd {
+            UiCommand::ScrollUp | UiCommand::HistoryPrev => {
+                app.interview_picker.as_mut().unwrap().move_up();
+                return;
+            }
+            UiCommand::ScrollDown | UiCommand::HistoryNext => {
+                app.interview_picker.as_mut().unwrap().move_down();
+                return;
+            }
+            UiCommand::Tab => {
+                let picker = app.interview_picker.as_mut().unwrap();
+                picker.custom_mode = !picker.custom_mode;
+                return;
+            }
+            UiCommand::InsertChar(c) => {
+                if let Some(picker) = app.interview_picker.as_mut() {
+                    if picker.custom_mode {
+                        picker.custom_input.push(c);
+                    }
+                }
+                return;
+            }
+            UiCommand::Backspace => {
+                if let Some(picker) = app.interview_picker.as_mut() {
+                    if picker.custom_mode {
+                        picker.custom_input.pop();
+                    }
+                }
+                return;
+            }
+            UiCommand::Submit => {
+                if let Some(answer) = app.interview_picker.as_mut().and_then(|p| p.submit()) {
+                    if let Some(state) = app.interview_state.as_mut() {
+                        let question = app.interview_picker.as_ref()
+                            .map(|p| p.question.clone()).unwrap_or_default();
+                        state.append_qa(&question, &answer);
+                    }
+                }
+                app.interview_picker = None;
+                return;
+            }
+            UiCommand::Cancel => {
+                if let Some(mut picker) = app.interview_picker.take() {
+                    if let Some(tx) = picker.answer_tx.take() {
+                        let _ = tx.send("skipped".into());
+                    }
+                }
+                return;
+            }
+            UiCommand::Quit => {} // fall through
+            _ => { return; }
+        }
+    }
+
     // Model picker active: intercept keys
     if app.model_picker.is_some() {
         match cmd {
@@ -692,6 +758,15 @@ async fn handle_slash_or_send(text: String, app: &mut App, action_tx: &mpsc::Sen
             content: App::help_text().to_string(),
             kind: MessageKind::Text,
         });
+    } else if text.trim().starts_with("/interview") {
+        let topic = text.trim().strip_prefix("/interview").unwrap().trim().to_string();
+        let topic = if topic.is_empty() { "General".to_string() } else { topic };
+        app.interview_state = Some(InterviewState::new(topic.clone(), &app.working_dir));
+        app.add_user_message(format!("/interview {topic}"));
+        app.start_assistant_turn();
+        if let Err(e) = action_tx.send(UserAction::StartInterview(topic)).await {
+            tracing::error!("failed to send StartInterview action: {e}");
+        }
     } else {
         let images = app.take_pending_images();
         app.add_user_message(text.clone());
@@ -755,6 +830,16 @@ async fn handle_agent_event(
         Some(AgentEvent::SubtaskExit { depth }) => {
             *current_depth = depth.saturating_sub(1);
             app.exit_subtask(depth);
+        }
+        Some(AgentEvent::InterviewQuestion { question, suggestions, answer_tx }) => {
+            app.interview_picker = Some(InterviewPickerState {
+                question,
+                suggestions,
+                selected: 0,
+                custom_input: String::new(),
+                custom_mode: false,
+                answer_tx: Some(answer_tx.0),
+            });
         }
         None => return false,
     }

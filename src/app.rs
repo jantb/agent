@@ -1,6 +1,10 @@
 use std::collections::VecDeque;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
+
+use chrono::Local;
 
 use crate::autocomplete::Autocomplete;
 use crate::input::InputState;
@@ -22,6 +26,77 @@ impl ModelPickerState {
     }
     pub fn selected(&self) -> Option<&str> {
         self.models.get(self.selected).map(String::as_str)
+    }
+}
+
+pub struct InterviewPickerState {
+    pub question: String,
+    pub suggestions: Vec<String>,
+    pub selected: usize,
+    pub custom_input: String,
+    pub custom_mode: bool,
+    pub answer_tx: Option<tokio::sync::oneshot::Sender<String>>,
+}
+
+impl InterviewPickerState {
+    pub fn move_up(&mut self) {
+        if !self.custom_mode {
+            self.selected = self.selected.saturating_sub(1);
+        }
+    }
+    pub fn move_down(&mut self) {
+        if !self.custom_mode && self.selected + 1 < self.suggestions.len() {
+            self.selected += 1;
+        }
+    }
+    pub fn submit(&mut self) -> Option<String> {
+        let answer = if self.custom_mode && !self.custom_input.is_empty() {
+            self.custom_input.clone()
+        } else {
+            self.suggestions.get(self.selected)?.to_string()
+        };
+        if let Some(tx) = self.answer_tx.take() {
+            let _ = tx.send(answer.clone());
+        }
+        Some(answer)
+    }
+}
+
+pub struct InterviewState {
+    pub topic: String,
+    pub file_path: std::path::PathBuf,
+    pub question_count: usize,
+}
+
+impl InterviewState {
+    pub fn new(topic: String, working_dir: &std::path::Path) -> Self {
+        let file_path = working_dir.join("questionnaire.md");
+        let header = format!(
+            "---\n\n## Interview: {} ({})\n\n",
+            topic,
+            Local::now().format("%Y-%m-%d %H:%M:%S")
+        );
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file_path)
+            .expect("failed to create questionnaire.md");
+        f.write_all(header.as_bytes()).ok();
+        Self { topic, file_path, question_count: 0 }
+    }
+
+    pub fn append_qa(&mut self, question: &str, answer: &str) {
+        self.question_count += 1;
+        let entry = format!(
+            "- [ ] **Q{}: {}** ({})\n  > A: {}\n\n",
+            self.question_count,
+            question,
+            Local::now().format("%H:%M:%S"),
+            answer,
+        );
+        if let Ok(mut f) = OpenOptions::new().append(true).open(&self.file_path) {
+            f.write_all(entry.as_bytes()).ok();
+        }
     }
 }
 
@@ -56,6 +131,8 @@ pub struct App {
     pub autocomplete: Option<Autocomplete>,
     pub available_models: Vec<String>,
     pub model_picker: Option<ModelPickerState>,
+    pub interview_picker: Option<InterviewPickerState>,
+    pub interview_state: Option<InterviewState>,
     /// Live agent tree: nodes in enter order, with depth-based hierarchy.
     pub tree: Vec<NodeInfo>,
     /// Tool call counter for the currently active subtask node.
@@ -95,6 +172,8 @@ impl App {
             autocomplete: None,
             available_models: Vec::new(),
             model_picker: None,
+            interview_picker: None,
+            interview_state: None,
             tree: Vec::new(),
             subtask_tool_calls: 0,
         }
@@ -405,6 +484,7 @@ impl App {
         "Commands:
          — /clear, /new: clear conversation
          — /help: show this help
+         — /interview <topic>: start interview mode
 
          Keybindings:
          — Enter: send message
@@ -1204,5 +1284,135 @@ mod tests {
         // but totals should accumulate
         assert_eq!(app.total_tokens_down, 150);
         assert_eq!(app.total_tokens_up, 700);
+    }
+
+    // --- interview picker ---
+
+    #[test]
+    fn interview_picker_move_up_down() {
+        let mut picker = InterviewPickerState {
+            question: "test?".into(),
+            suggestions: vec!["a".into(), "b".into(), "c".into()],
+            selected: 0,
+            custom_input: String::new(),
+            custom_mode: false,
+            answer_tx: None,
+        };
+        picker.move_down();
+        assert_eq!(picker.selected, 1);
+        picker.move_down();
+        assert_eq!(picker.selected, 2);
+        picker.move_down();
+        assert_eq!(picker.selected, 2); // stays at end
+        picker.move_up();
+        assert_eq!(picker.selected, 1);
+        picker.move_up();
+        assert_eq!(picker.selected, 0);
+        picker.move_up();
+        assert_eq!(picker.selected, 0); // stays at 0
+    }
+
+    #[test]
+    fn interview_picker_custom_mode_ignores_nav() {
+        let mut picker = InterviewPickerState {
+            question: "test?".into(),
+            suggestions: vec!["a".into(), "b".into()],
+            selected: 0,
+            custom_input: String::new(),
+            custom_mode: true,
+            answer_tx: None,
+        };
+        picker.move_down();
+        assert_eq!(picker.selected, 0); // no change in custom mode
+    }
+
+    #[test]
+    fn interview_picker_submit_suggestion() {
+        let mut picker = InterviewPickerState {
+            question: "test?".into(),
+            suggestions: vec!["alpha".into(), "beta".into()],
+            selected: 1,
+            custom_input: String::new(),
+            custom_mode: false,
+            answer_tx: None,
+        };
+        let answer = picker.submit();
+        assert_eq!(answer, Some("beta".into()));
+    }
+
+    #[test]
+    fn interview_picker_submit_custom() {
+        let mut picker = InterviewPickerState {
+            question: "test?".into(),
+            suggestions: vec!["a".into()],
+            selected: 0,
+            custom_input: "my answer".into(),
+            custom_mode: true,
+            answer_tx: None,
+        };
+        let answer = picker.submit();
+        assert_eq!(answer, Some("my answer".into()));
+    }
+
+    #[test]
+    fn interview_picker_submit_empty_custom_falls_back() {
+        let mut picker = InterviewPickerState {
+            question: "test?".into(),
+            suggestions: vec!["fallback".into()],
+            selected: 0,
+            custom_input: String::new(),
+            custom_mode: true,
+            answer_tx: None,
+        };
+        let answer = picker.submit();
+        assert_eq!(answer, Some("fallback".into()));
+    }
+
+    #[test]
+    fn interview_picker_submit_sends_via_oneshot() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+        let mut picker = InterviewPickerState {
+            question: "test?".into(),
+            suggestions: vec!["yes".into()],
+            selected: 0,
+            custom_input: String::new(),
+            custom_mode: false,
+            answer_tx: Some(tx),
+        };
+        let answer = picker.submit();
+        assert_eq!(answer, Some("yes".into()));
+        assert!(picker.answer_tx.is_none()); // taken
+        let received = rx.blocking_recv().unwrap();
+        assert_eq!(received, "yes");
+    }
+
+    #[test]
+    fn interview_state_creates_file_and_appends() {
+        let dir = std::env::temp_dir().join(format!("agent_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut state = InterviewState::new("test topic".into(), &dir);
+        assert!(state.file_path.exists());
+        let header = std::fs::read_to_string(&state.file_path).unwrap();
+        assert!(header.contains("Interview: test topic"));
+
+        state.append_qa("What color?", "Blue");
+        let content = std::fs::read_to_string(&state.file_path).unwrap();
+        assert!(content.contains("- [ ] **Q1: What color?**"));
+        assert!(content.contains("> A: Blue"));
+
+        state.append_qa("What size?", "Large");
+        let content = std::fs::read_to_string(&state.file_path).unwrap();
+        assert!(content.contains("**Q2: What size?**"));
+        assert!(content.contains("> A: Large"));
+        assert_eq!(state.question_count, 2);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn interview_fields_default_none() {
+        let app = make_app();
+        assert!(app.interview_picker.is_none());
+        assert!(app.interview_state.is_none());
     }
 }

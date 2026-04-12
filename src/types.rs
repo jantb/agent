@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -66,6 +67,15 @@ pub struct ToolResult {
     pub images: Vec<String>,
 }
 
+/// Wrapper for oneshot::Sender that implements Debug.
+pub struct OneshotTx(pub oneshot::Sender<String>);
+
+impl std::fmt::Debug for OneshotTx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<oneshot::Sender>")
+    }
+}
+
 #[derive(Debug)]
 pub enum AgentEvent {
     ThinkingStarted,
@@ -88,6 +98,11 @@ pub enum AgentEvent {
     },
     SubtaskExit {
         depth: usize,
+    },
+    InterviewQuestion {
+        question: String,
+        suggestions: Vec<String>,
+        answer_tx: OneshotTx,
     },
 }
 

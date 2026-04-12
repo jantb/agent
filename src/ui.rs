@@ -71,6 +71,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if let Some(picker) = &app.model_picker {
         draw_model_picker(frame, picker, frame.area());
     }
+    if let Some(picker) = &app.interview_picker {
+        draw_interview_picker(frame, picker, frame.area());
+    }
 }
 
 fn draw_tree_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -503,7 +506,7 @@ fn draw_input(
     let input_height = area.height as usize;
     let visual_row = visual_row.min(input_height.saturating_sub(1)) as u16;
 
-    if app.model_picker.is_none() {
+    if app.model_picker.is_none() && app.interview_picker.is_none() {
         frame.set_cursor_position(Position::new(
             area.x + prefix as u16 + visual_col as u16,
             area.y + visual_row,
@@ -609,6 +612,81 @@ fn draw_model_picker(frame: &mut Frame, picker: &crate::app::ModelPickerState, a
         Paragraph::new(lines).block(
             Block::bordered()
                 .title(" Select model ")
+                .border_style(Style::default().fg(Color::Cyan)),
+        ),
+        popup_area,
+    );
+}
+
+fn draw_interview_picker(
+    frame: &mut Frame,
+    picker: &crate::app::InterviewPickerState,
+    area: Rect,
+) {
+    let max_width = (area.width * 3 / 4).max(30).min(area.width);
+    let inner_width = max_width.saturating_sub(2) as usize;
+
+    // Build lines
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Question (word-wrapped, yellow bold)
+    for wl in word_wrap(&picker.question, inner_width) {
+        lines.push(Line::from(Span::styled(
+            wl,
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )));
+    }
+    lines.push(Line::from(""));
+
+    // Suggestions
+    for (i, suggestion) in picker.suggestions.iter().enumerate() {
+        let selected = !picker.custom_mode && i == picker.selected;
+        let (bg, fg) = if selected {
+            (Color::DarkGray, Color::White)
+        } else {
+            (Color::Reset, Color::White)
+        };
+        let marker = if selected { "▸ " } else { "  " };
+        lines.push(Line::from(Span::styled(
+            format!("{marker}{suggestion}"),
+            Style::default().bg(bg).fg(fg).add_modifier(
+                if selected { Modifier::BOLD } else { Modifier::empty() },
+            ),
+        )));
+    }
+
+    // Separator + custom input
+    lines.push(Line::from(Span::styled(
+        "── or type your own ──",
+        Style::default().fg(Color::DarkGray),
+    )));
+    let custom_marker = if picker.custom_mode { "▸ " } else { "  " };
+    let cursor = if picker.custom_mode { "█" } else { "" };
+    let custom_bg = if picker.custom_mode { Color::DarkGray } else { Color::Reset };
+    lines.push(Line::from(Span::styled(
+        format!("{custom_marker}{}{cursor}", picker.custom_input),
+        Style::default().bg(custom_bg).fg(Color::White).add_modifier(
+            if picker.custom_mode { Modifier::BOLD } else { Modifier::empty() },
+        ),
+    )));
+
+    // Footer
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Tab: toggle  Enter: select  Esc: skip",
+        Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+    )));
+
+    let popup_height = (lines.len() as u16 + 2).min(area.height);
+    let popup_x = area.x + area.width.saturating_sub(max_width) / 2;
+    let popup_y = area.y + area.height.saturating_sub(popup_height) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, max_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .title(" Interview Question ")
                 .border_style(Style::default().fg(Color::Cyan)),
         ),
         popup_area,

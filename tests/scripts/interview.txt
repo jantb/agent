@@ -1,0 +1,8 @@
+# Interview mode test
+# Verifies that /interview triggers interview_question tool calls
+# and that the questionnaire file is created.
+
+/interview testing requirements
+@expect_event InterviewQuestion
+@wait 60
+@expect_file questionnaire.md Interview: testing requirements
