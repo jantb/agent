@@ -10,7 +10,8 @@ use crate::{
     session::{Session, SessionMessage},
     tools::execute_built_in,
     types::{
-        AgentEvent, OneshotTx, Role, ToolCall, ToolDefinition, ToolResult, ToolSource, TurnOutcome,
+        AgentEvent, AgentMode, OneshotTx, Role, ToolCall, ToolDefinition, ToolResult, ToolSource,
+        TurnOutcome,
     },
 };
 
@@ -70,6 +71,7 @@ fn orchestrator_system_prompt(working_dir: &std::path::Path, memory_index: &str)
 You are the orchestration layer of a coding AI agent. Working directory: {dir}
 You help users write, edit, debug, and understand code. Prefer idiomatic, compact solutions.
 Your ONLY tool is `delegate_task`. You MUST call it for EVERY request — no exceptions.
+You do NOT have bash, shell, or command execution access. Use only the provided tools.
 
 ## Rules
 1. Break the goal into focused subtasks. Delegate each via `delegate_task` sequentially.
@@ -98,6 +100,7 @@ fn coordinator_system_prompt(working_dir: &std::path::Path) -> String {
         "\
 You are the coordination layer of a coding AI agent. Working directory: {dir}
 Tools: glob_files, search_files, list_dir, delegate_task.
+You do NOT have bash, shell, or command execution access. Use only the provided tools.
 
 ## Rules
 1. Search FIRST with your own tools. NEVER delegate search/analysis — do it yourself.
@@ -115,6 +118,7 @@ fn worker_system_prompt(working_dir: &std::path::Path) -> String {
 You are the execution layer of a coding AI agent. Working directory: {dir}
 You have full file-tool access. No delegation — complete everything yourself.
 Write idiomatic, compact code. Fix root causes, not symptoms.
+You do NOT have bash, shell, or command execution access. Use only the provided tools.
 
 ## Rules
 1. Execute the task completely. Use read_file, write_file, edit_file, search_files as needed.
@@ -127,21 +131,22 @@ Write idiomatic, compact code. Fix root causes, not symptoms.
     )
 }
 
-fn interview_system_prompt(topic: &str, working_dir: &std::path::Path) -> String {
-    let dir = working_dir.display();
-    format!("\
-You are conducting a structured interview about: {topic}
-Working directory: {dir}
+const PLAN_PROMPT_APPENDIX: &str = "\n\n## Plan mode\n\
+You have the `interview_question` tool and you MUST use it before taking any action.\n\
+Your workflow has three mandatory phases:\n\
+1. **Clarify**: Ask probing questions via `interview_question` to fully understand scope, constraints, \
+edge cases, and preferences. Do not skip this even if the request seems clear — surface hidden assumptions. \
+Ask at least one question.\n\
+2. **Plan**: After the user answers, present a concrete numbered plan of what you will do. \
+Ask for approval or changes before you proceed.\n\
+3. **Execute**: Only after explicit user approval, carry out the plan.\n\
+If the user answers \"[DONE]\", move to the next phase immediately.";
 
-Your ONLY tool is `interview_question`. Use it to ask one focused question at a time.
-
-## Rules
-1. Ask clear, specific questions — one at a time.
-2. Provide 2-5 suggested answers that cover common options.
-3. Cover all important aspects of the topic systematically.
-4. After gathering enough information (typically 5-10 questions), respond with a brief summary of the findings. Do NOT call any more tools when done.
-5. Adapt follow-up questions based on previous answers.")
-}
+const THOROUGH_PROMPT_APPENDIX: &str = "\n\n## Thorough mode\n\
+You have the `interview_question` tool. Use it proactively — ask about any ambiguity, \
+unclear requirements, or choices with significant implementation impact. \
+Do not default to assumptions when you could ask. Prefer asking over guessing. \
+If the user answers \"[DONE]\", stop asking and proceed.";
 
 /// Filter the full tool set to the subset appropriate for a given depth.
 /// When `flat` is true, all depths get worker tools (no delegate_task).
@@ -152,32 +157,39 @@ pub fn tools_for_depth(
     all_tools: &[ToolDefinition],
     depth: usize,
     flat: bool,
+    mode: AgentMode,
 ) -> Vec<ToolDefinition> {
-    if flat {
-        return all_tools
+    let mut tools: Vec<ToolDefinition> = if flat {
+        all_tools
             .iter()
             .filter(|t| t.name != "delegate_task")
             .cloned()
-            .collect();
+            .collect()
+    } else {
+        const COORDINATOR_TOOLS: &[&str] =
+            &["delegate_task", "glob_files", "search_files", "list_dir"];
+        match depth {
+            0 => all_tools
+                .iter()
+                .filter(|t| t.name == "delegate_task")
+                .cloned()
+                .collect(),
+            1 => all_tools
+                .iter()
+                .filter(|t| COORDINATOR_TOOLS.contains(&t.name.as_str()))
+                .cloned()
+                .collect(),
+            _ => all_tools
+                .iter()
+                .filter(|t| t.name != "delegate_task")
+                .cloned()
+                .collect(),
+        }
+    };
+    if matches!(mode, AgentMode::Plan | AgentMode::Thorough) && depth == 0 {
+        tools.push(crate::tools::interview_question_def());
     }
-    const COORDINATOR_TOOLS: &[&str] = &["delegate_task", "glob_files", "search_files", "list_dir"];
-    match depth {
-        0 => all_tools
-            .iter()
-            .filter(|t| t.name == "delegate_task")
-            .cloned()
-            .collect(),
-        1 => all_tools
-            .iter()
-            .filter(|t| COORDINATOR_TOOLS.contains(&t.name.as_str()))
-            .cloned()
-            .collect(),
-        _ => all_tools
-            .iter()
-            .filter(|t| t.name != "delegate_task")
-            .cloned()
-            .collect(),
-    }
+    tools
 }
 
 static SUBTASK_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -245,12 +257,15 @@ fn truncate_subtask_result(s: String, max_chars: usize) -> String {
 }
 
 pub enum UserAction {
-    SendMessage(String, Vec<String>), // text, base64 images
+    SendMessage {
+        text: String,
+        images: Vec<String>,
+        mode: AgentMode,
+    },
     Cancel,
     Quit,
     ClearHistory,
     ChangeModel(String),
-    StartInterview(String),
 }
 
 enum TurnPhaseResult {
@@ -276,6 +291,7 @@ pub struct AgentTask {
     system_prompt: String,
     depth: usize,
     flat: bool,
+    mode: AgentMode,
 }
 
 pub struct AgentTaskConfig {
@@ -291,6 +307,8 @@ pub struct AgentTaskConfig {
     pub system_prompt: String,
     /// Single-level mode: no delegation hierarchy.
     pub flat: bool,
+    /// Agent mode: controls which tools are available and how the agent behaves.
+    pub mode: AgentMode,
 }
 
 impl AgentTask {
@@ -302,7 +320,13 @@ impl AgentTask {
                 cfg.working_dir
             }
         };
-        let tools = tools_for_depth(&cfg.all_tools, 0, cfg.flat);
+        let tools = tools_for_depth(&cfg.all_tools, 0, cfg.flat, cfg.mode);
+        let mut system_prompt = cfg.system_prompt;
+        match cfg.mode {
+            AgentMode::Plan => system_prompt.push_str(PLAN_PROMPT_APPENDIX),
+            AgentMode::Thorough => system_prompt.push_str(THOROUGH_PROMPT_APPENDIX),
+            AgentMode::Oneshot => {}
+        }
         Self {
             ollama: cfg.ollama,
             mcp: cfg.mcp,
@@ -312,9 +336,10 @@ impl AgentTask {
             event_tx: cfg.event_tx,
             action_rx: Some(cfg.action_rx),
             session: cfg.session,
-            system_prompt: cfg.system_prompt,
+            system_prompt,
             depth: 0,
             flat: cfg.flat,
+            mode: cfg.mode,
         }
     }
 
@@ -541,7 +566,7 @@ impl AgentTask {
         })
         .await;
 
-        let child_tools = tools_for_depth(&self.all_tools, child_depth, self.flat);
+        let child_tools = tools_for_depth(&self.all_tools, child_depth, self.flat, AgentMode::Oneshot);
         let child_system = system_prompt_for_depth(child_depth, &self.working_dir, "", self.flat);
         let mut child_session = Session::new("subtask", &self.working_dir);
         child_session.append_message(SessionMessage::Text {
@@ -562,6 +587,7 @@ impl AgentTask {
             system_prompt: child_system,
             depth: child_depth,
             flat: self.flat,
+            mode: AgentMode::Oneshot,
         };
 
         let n = SUBTASK_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -687,76 +713,37 @@ impl AgentTask {
                 }
                 UserAction::ChangeModel(model) => {
                     self.flat = is_flat_model(&model);
-                    self.tools = tools_for_depth(&self.all_tools, self.depth, self.flat);
+                    self.tools =
+                        tools_for_depth(&self.all_tools, self.depth, self.flat, self.mode);
                     let idx = memory::build_memory_index(&self.working_dir);
                     self.system_prompt =
                         system_prompt_for_depth(self.depth, &self.working_dir, &idx, self.flat);
+                    match self.mode {
+                        AgentMode::Plan => self.system_prompt.push_str(PLAN_PROMPT_APPENDIX),
+                        AgentMode::Thorough => self.system_prompt.push_str(THOROUGH_PROMPT_APPENDIX),
+                        AgentMode::Oneshot => {}
+                    }
                     self.ollama.set_model(model);
                     self.emit(AgentEvent::TurnDone).await;
                 }
-                UserAction::StartInterview(topic) => {
-                    self.system_prompt = interview_system_prompt(&topic, &self.working_dir);
-                    self.tools = vec![crate::tools::interview_question_def()];
-                    self.session.append_message(SessionMessage::Text {
-                        role: Role::User,
-                        content: format!("Start an interview about: {topic}"),
-                        images: vec![],
-                    });
-                    self.save_or_emit_error().await;
-
-                    info!("interview mode started: {topic}");
-                    const MAX_TOOL_ROUNDS: u32 = 25;
-                    let mut round: u32 = 0;
-                    let mut recent_text_fps: std::collections::VecDeque<u64> =
-                        std::collections::VecDeque::with_capacity(20);
-                    let mut nudged = false;
-                    let mut nudge_msg_idx: usize = 0;
-                    'turn: loop {
-                        match self.execute_turn().await {
-                            TurnPhaseResult::Text(content) => {
-                                debug!(chars = content.len(), "interview done: text");
-                                if !content.trim().is_empty() {
-                                    self.handle_text_turn(content).await;
-                                }
-                                break 'turn;
-                            }
-                            TurnPhaseResult::ToolCalls(text, calls) => {
-                                round += 1;
-                                if round > MAX_TOOL_ROUNDS {
-                                    self.emit(AgentEvent::LoopDetected).await;
-                                    self.emit(AgentEvent::TurnDone).await;
-                                    break 'turn;
-                                }
-                                match self
-                                    .handle_loop_check(
-                                        &text,
-                                        &mut recent_text_fps,
-                                        &mut nudged,
-                                        &mut nudge_msg_idx,
-                                        "interview",
-                                    )
-                                    .await
-                                {
-                                    Some(true) => continue 'turn,
-                                    Some(false) => break 'turn,
-                                    None => {}
-                                }
-                                self.handle_tool_calls(text, calls).await;
-                            }
-                            TurnPhaseResult::Cancelled => {
-                                self.emit(AgentEvent::TurnDone).await;
-                                break 'turn;
-                            }
-                            TurnPhaseResult::Error(e) => {
-                                warn!(error = %e, "interview turn error");
-                                self.emit(AgentEvent::Error(e.to_string())).await;
-                                break 'turn;
-                            }
-                            TurnPhaseResult::Quit => return,
+                UserAction::SendMessage {
+                    text,
+                    images,
+                    mode,
+                } => {
+                    if mode != self.mode {
+                        self.mode = mode;
+                        self.tools =
+                            tools_for_depth(&self.all_tools, self.depth, self.flat, self.mode);
+                        let idx = memory::build_memory_index(&self.working_dir);
+                        self.system_prompt =
+                            system_prompt_for_depth(self.depth, &self.working_dir, &idx, self.flat);
+                        match self.mode {
+                            AgentMode::Plan => self.system_prompt.push_str(PLAN_PROMPT_APPENDIX),
+                            AgentMode::Thorough => self.system_prompt.push_str(THOROUGH_PROMPT_APPENDIX),
+                            AgentMode::Oneshot => {}
                         }
                     }
-                }
-                UserAction::SendMessage(text, images) => {
                     self.session.append_message(SessionMessage::Text {
                         role: Role::User,
                         content: text,
@@ -983,7 +970,7 @@ mod tests {
     fn tools_for_depth_orchestrator_has_only_delegate() {
         use crate::tools::built_in_tool_definitions;
         let all = built_in_tool_definitions();
-        let tools = tools_for_depth(&all, 0, false);
+        let tools = tools_for_depth(&all, 0, false, AgentMode::Oneshot);
         let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"delegate_task"));
         assert!(!names.contains(&"write_file"));
@@ -995,7 +982,7 @@ mod tests {
     fn tools_for_depth_coordinator_has_search_and_delegate() {
         use crate::tools::built_in_tool_definitions;
         let all = built_in_tool_definitions();
-        let tools = tools_for_depth(&all, 1, false);
+        let tools = tools_for_depth(&all, 1, false, AgentMode::Oneshot);
         let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"delegate_task"));
         assert!(names.contains(&"glob_files"));
@@ -1009,7 +996,7 @@ mod tests {
     fn tools_for_depth_worker_has_file_tools_no_delegate() {
         use crate::tools::built_in_tool_definitions;
         let all = built_in_tool_definitions();
-        let tools = tools_for_depth(&all, 2, false);
+        let tools = tools_for_depth(&all, 2, false, AgentMode::Oneshot);
         let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"write_file"));
@@ -1021,7 +1008,7 @@ mod tests {
     fn tools_for_depth_coordinator_exact_set() {
         use crate::tools::built_in_tool_definitions;
         let all = built_in_tool_definitions();
-        let tools = tools_for_depth(&all, 1, false);
+        let tools = tools_for_depth(&all, 1, false, AgentMode::Oneshot);
         let names: std::collections::HashSet<_> = tools.iter().map(|t| t.name.as_str()).collect();
         let expected: std::collections::HashSet<&str> =
             ["delegate_task", "glob_files", "search_files", "list_dir"].into();
@@ -1032,7 +1019,7 @@ mod tests {
     fn tools_for_depth_worker_excludes_only_delegate() {
         use crate::tools::built_in_tool_definitions;
         let all = built_in_tool_definitions();
-        let worker_tools = tools_for_depth(&all, 2, false);
+        let worker_tools = tools_for_depth(&all, 2, false, AgentMode::Oneshot);
         let mut expected: std::collections::HashSet<_> =
             all.iter().map(|t| t.name.as_str()).collect();
         expected.remove("delegate_task");
@@ -1045,11 +1032,11 @@ mod tests {
     fn tools_for_depth_3_same_as_depth_2() {
         use crate::tools::built_in_tool_definitions;
         let all = built_in_tool_definitions();
-        let mut d2: Vec<_> = tools_for_depth(&all, 2, false)
+        let mut d2: Vec<_> = tools_for_depth(&all, 2, false, AgentMode::Oneshot)
             .iter()
             .map(|t| t.name.clone())
             .collect();
-        let mut d3: Vec<_> = tools_for_depth(&all, 3, false)
+        let mut d3: Vec<_> = tools_for_depth(&all, 3, false, AgentMode::Oneshot)
             .iter()
             .map(|t| t.name.clone())
             .collect();
@@ -1062,9 +1049,9 @@ mod tests {
     fn flat_mode_all_depths_get_worker_tools() {
         use crate::tools::built_in_tool_definitions;
         let all = built_in_tool_definitions();
-        let d0 = tools_for_depth(&all, 0, true);
-        let d1 = tools_for_depth(&all, 1, true);
-        let d2 = tools_for_depth(&all, 2, true);
+        let d0 = tools_for_depth(&all, 0, true, AgentMode::Oneshot);
+        let d1 = tools_for_depth(&all, 1, true, AgentMode::Oneshot);
+        let d2 = tools_for_depth(&all, 2, true, AgentMode::Oneshot);
         assert_eq!(d0.len(), d2.len());
         assert_eq!(d1.len(), d2.len());
         assert!(d0.iter().all(|t| t.name != "delegate_task"));
@@ -1076,6 +1063,25 @@ mod tests {
         let prompt = system_prompt_for_depth(0, dir, "", true);
         assert!(!prompt.contains("delegate_task"));
         assert!(prompt.contains("coding AI agent"));
+    }
+
+    #[test]
+    fn thorough_mode_adds_interview_question_at_depth_0() {
+        use crate::tools::built_in_tool_definitions;
+        let all = built_in_tool_definitions();
+        let tools = tools_for_depth(&all, 0, false, AgentMode::Thorough);
+        let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"delegate_task"));
+        assert!(names.contains(&"interview_question"));
+    }
+
+    #[test]
+    fn thorough_mode_does_not_add_interview_question_at_depth_2() {
+        use crate::tools::built_in_tool_definitions;
+        let all = built_in_tool_definitions();
+        let tools = tools_for_depth(&all, 2, false, AgentMode::Thorough);
+        let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(!names.contains(&"interview_question"));
     }
 
     #[test]

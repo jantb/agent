@@ -15,7 +15,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use agent::agent::{
     is_flat_model, system_prompt_for_depth, AgentTask, AgentTaskConfig, UserAction,
 };
-use agent::app::{App, InterviewPickerState, InterviewState, ModelPickerState};
+use agent::app::{App, InterviewPickerState, ModelPickerState};
 use agent::autocomplete;
 use agent::config;
 use agent::keys;
@@ -25,7 +25,7 @@ use agent::ollama::OllamaClient;
 use agent::script::{self, ScriptCommand, StepReport, StepStatus, TestReport};
 use agent::session::{ensure_gitignore, Session};
 use agent::tools::built_in_tool_definitions;
-use agent::types::{AgentEvent, ChatMessage, MessageKind};
+use agent::types::{AgentEvent, AgentMode, ChatMessage, MessageKind};
 use agent::ui;
 
 #[derive(Parser)]
@@ -155,6 +155,7 @@ async fn main() -> anyhow::Result<()> {
         session,
         system_prompt: sys_prompt,
         flat,
+        mode: AgentMode::default(),
     });
     tokio::spawn(async move { agent_task.run().await });
 
@@ -163,21 +164,22 @@ async fn main() -> anyhow::Result<()> {
         if cli.headless {
             let commands = script::parse_script(script_path)?;
             let mut report = TestReport::new(&cli.model);
-            let mut interview_state: Option<InterviewState> = None;
+            let mut mode = AgentMode::default();
 
             for cmd in &commands {
                 match cmd {
                     ScriptCommand::Send(text) => {
                         let step_start = std::time::Instant::now();
 
-                        let action = if let Some(topic) = text.trim().strip_prefix("/interview") {
-                            let topic = topic.trim();
-                            let topic = if topic.is_empty() { "general" } else { topic };
-                            interview_state =
-                                Some(InterviewState::new(topic.to_string(), &working_dir));
-                            UserAction::StartInterview(topic.to_string())
-                        } else {
-                            UserAction::SendMessage(text.clone(), vec![])
+                        if text.trim() == "/mode" {
+                            mode = mode.cycle();
+                            println!("[mode] {}", mode.label());
+                            continue;
+                        }
+                        let action = UserAction::SendMessage {
+                            text: text.clone(),
+                            images: vec![],
+                            mode,
                         };
                         action_tx.send(action).await.ok();
                         println!("[send] {text}");
@@ -253,11 +255,8 @@ async fn main() -> anyhow::Result<()> {
                                         }
                                         Some(AgentEvent::InterviewQuestion { question, suggestions, answer_tx }) => {
                                             let answer = suggestions.into_iter().next().unwrap_or_else(|| "yes".into());
-                                            println!("[interview] Q: {question} -> A: {answer}");
+                                            println!("[clarify] Q: {question} -> A: {answer}");
                                             log.push(format!("InterviewQuestion: {question}"));
-                                            if let Some(state) = interview_state.as_mut() {
-                                                state.append_qa(&question, &answer);
-                                            }
                                             let _ = answer_tx.0.send(answer);
                                         }
                                         None => {
@@ -479,7 +478,7 @@ async fn main() -> anyhow::Result<()> {
                 if let Some(text) = script_msg {
                     app.add_user_message(text.clone());
                     app.start_assistant_turn();
-                    action_tx.send(UserAction::SendMessage(text, vec![])).await.ok();
+                    action_tx.send(UserAction::SendMessage { text, images: vec![], mode: app.mode }).await.ok();
                 }
             }
             _ = tick.tick() => {}
@@ -555,23 +554,14 @@ async fn apply_command(cmd: keys::UiCommand, app: &mut App, action_tx: &mpsc::Se
                 return;
             }
             UiCommand::Submit => {
-                if let Some(answer) = app.interview_picker.as_mut().and_then(|p| p.submit()) {
-                    if let Some(state) = app.interview_state.as_mut() {
-                        let question = app
-                            .interview_picker
-                            .as_ref()
-                            .map(|p| p.question.clone())
-                            .unwrap_or_default();
-                        state.append_qa(&question, &answer);
-                    }
-                }
+                app.interview_picker.as_mut().and_then(|p| p.submit());
                 app.interview_picker = None;
                 return;
             }
             UiCommand::Cancel => {
                 if let Some(mut picker) = app.interview_picker.take() {
                     if let Some(tx) = picker.answer_tx.take() {
-                        let _ = tx.send("skipped".into());
+                        let _ = tx.send("[DONE]".into());
                     }
                 }
                 return;
@@ -729,6 +719,14 @@ async fn apply_command(cmd: keys::UiCommand, app: &mut App, action_tx: &mpsc::Se
                 tracing::error!("failed to send ClearHistory action: {e}");
             }
         }
+        UiCommand::CycleMode => {
+            app.mode = app.mode.cycle();
+            app.messages.push(ChatMessage {
+                role: agent::types::Role::Assistant,
+                content: format!("Mode: {}", app.mode.label()),
+                kind: MessageKind::Text,
+            });
+        }
         UiCommand::PasteImage => {
             let result = tokio::task::spawn_blocking(|| -> Result<Vec<u8>, String> {
                 let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
@@ -774,29 +772,25 @@ async fn handle_slash_or_send(text: String, app: &mut App, action_tx: &mpsc::Sen
             content: App::help_text().to_string(),
             kind: MessageKind::Text,
         });
-    } else if text.trim().starts_with("/interview") {
-        let topic = text
-            .trim()
-            .strip_prefix("/interview")
-            .unwrap()
-            .trim()
-            .to_string();
-        let topic = if topic.is_empty() {
-            "General".to_string()
-        } else {
-            topic
-        };
-        app.interview_state = Some(InterviewState::new(topic.clone(), &app.working_dir));
-        app.add_user_message(format!("/interview {topic}"));
-        app.start_assistant_turn();
-        if let Err(e) = action_tx.send(UserAction::StartInterview(topic)).await {
-            tracing::error!("failed to send StartInterview action: {e}");
-        }
+    } else if text.trim() == "/mode" {
+        app.mode = app.mode.cycle();
+        app.messages.push(ChatMessage {
+            role: agent::types::Role::Assistant,
+            content: format!("Mode: {}", app.mode.label()),
+            kind: MessageKind::Text,
+        });
     } else {
         let images = app.take_pending_images();
         app.add_user_message(text.clone());
         app.start_assistant_turn();
-        if let Err(e) = action_tx.send(UserAction::SendMessage(text, images)).await {
+        if let Err(e) = action_tx
+            .send(UserAction::SendMessage {
+                text,
+                images,
+                mode: app.mode,
+            })
+            .await
+        {
             tracing::error!("failed to send SendMessage action: {e}");
         }
     }
@@ -831,7 +825,14 @@ async fn handle_agent_event(
             app.finish_assistant_turn();
             if let Some((text, images)) = app.dequeue_message() {
                 app.start_assistant_turn();
-                if let Err(e) = action_tx.send(UserAction::SendMessage(text, images)).await {
+                if let Err(e) = action_tx
+                    .send(UserAction::SendMessage {
+                        text,
+                        images,
+                        mode: app.mode,
+                    })
+                    .await
+                {
                     tracing::error!("failed to send queued message: {e}");
                 }
             }

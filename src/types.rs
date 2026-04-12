@@ -200,3 +200,29 @@ pub enum MessageKind {
         depth: usize,
     },
 }
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum AgentMode {
+    #[default]
+    Plan,
+    Thorough,
+    Oneshot,
+}
+
+impl AgentMode {
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Plan => Self::Thorough,
+            Self::Thorough => Self::Oneshot,
+            Self::Oneshot => Self::Plan,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::Thorough => "thorough",
+            Self::Oneshot => "oneshot",
+        }
+    }
+}

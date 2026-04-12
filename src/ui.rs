@@ -9,7 +9,7 @@ use ratatui::{
 use crate::app::App;
 use crate::autocomplete::COMMANDS;
 use crate::markdown::markdown_to_lines;
-use crate::types::{MessageKind, NodeStatus, Role};
+use crate::types::{AgentMode, MessageKind, NodeStatus, Role};
 
 const TREE_PANEL_WIDTH: u16 = 44;
 
@@ -94,7 +94,7 @@ fn draw_tree_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             NodeStatus::Failed => ("✗", Color::Red),
         };
         let connector = if node.depth > 0 { "└─ " } else { "" };
-        let prefix_width = indent.len() + connector.len() + 2; // glyph + space
+        let prefix_width = indent.len() + connector.len() + 3; // glyph (up to 2 cols) + space
         let avail = (area.width as usize).saturating_sub(prefix_width).max(1);
         let label_chars: Vec<char> = node.label.chars().collect();
         let chunks: Vec<String> = if label_chars.is_empty() {
@@ -290,7 +290,9 @@ fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             MessageKind::SubtaskEnter { label, .. } => {
                 // Separator before enter if a prior subtask just exited
                 if msg_idx > 0 {
-                    let has_prior_exit = app.messages[..msg_idx].iter().rev()
+                    let has_prior_exit = app.messages[..msg_idx]
+                        .iter()
+                        .rev()
                         .take_while(|m| !matches!(m.kind, MessageKind::SubtaskEnter { .. }))
                         .any(|m| matches!(m.kind, MessageKind::SubtaskExit { .. }));
                     if has_prior_exit {
@@ -299,24 +301,25 @@ fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
                 }
                 let prefix = "──▶ ";
                 let prefix_w = prefix.chars().count();
-                let label_trunc = truncate(label, (area.width as usize).saturating_sub(prefix_w + 1));
+                let label_budget = (area.width as usize).saturating_sub(prefix_w + 1);
+                let label_trunc = truncate(label, label_budget.saturating_sub(3));
                 let used = prefix_w + label_trunc.chars().count() + 1;
                 let filler = "─".repeat((area.width as usize).saturating_sub(used));
                 lines.push(Line::from(vec![
                     Span::styled(prefix, Style::default().fg(Color::Cyan)),
                     Span::styled(
                         label_trunc,
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(
-                        format!(" {filler}"),
-                        Style::default().fg(Color::Cyan),
-                    ),
+                    Span::styled(format!(" {filler}"), Style::default().fg(Color::Cyan)),
                 ]));
             }
             MessageKind::SubtaskExit { .. } => {
                 let prefix = "──◀ done ";
-                let filler = "─".repeat((area.width as usize).saturating_sub(prefix.chars().count()));
+                let filler =
+                    "─".repeat((area.width as usize).saturating_sub(prefix.chars().count()));
                 lines.push(Line::from(Span::styled(
                     format!("{prefix}{filler}"),
                     Style::default().fg(Color::DarkGray),
@@ -755,6 +758,18 @@ fn draw_status(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     };
 
     let mut right_spans: Vec<Span> = Vec::new();
+
+    if app.mode != AgentMode::Oneshot {
+        right_spans.push(Span::styled(
+            app.mode.label(),
+            Style::default().fg(match app.mode {
+                AgentMode::Plan => Color::Blue,
+                AgentMode::Thorough => Color::Green,
+                AgentMode::Oneshot => Color::DarkGray,
+            }),
+        ));
+        right_spans.push(Span::raw("  "));
+    }
 
     // Cumulative token counters
     {
@@ -1280,7 +1295,10 @@ mod tests {
         let chat_end = 100u16;
 
         // Dump every row with text and color info
-        println!("\n=== RENDERED BUFFER (chat area cols {}..{}) ===", chat_start, chat_end);
+        println!(
+            "\n=== RENDERED BUFFER (chat area cols {}..{}) ===",
+            chat_start, chat_end
+        );
         for row in 0..40u16 {
             let text = row_text(&buffer, row, chat_start, chat_end);
             if text.trim().is_empty() {
@@ -1299,7 +1317,12 @@ mod tests {
                     }
                 }
             }
-            println!("row {:2}: |{}|  colors: {}", row, text.trim_end(), colors.join(", "));
+            println!(
+                "row {:2}: |{}|  colors: {}",
+                row,
+                text.trim_end(),
+                colors.join(", ")
+            );
         }
         println!("=== END ===\n");
 
@@ -1337,12 +1360,115 @@ mod tests {
             let second_enter = enter_rows[1];
             println!(
                 "Gap between first exit (row {}) and second enter (row {}): {} rows",
-                first_exit, second_enter, second_enter - first_exit
+                first_exit,
+                second_enter,
+                second_enter - first_exit
             );
             for r in first_exit..=second_enter {
                 let text = row_text(&buffer, r, chat_start, chat_end);
                 println!("  row {}: |{}|", r, text.trim_end());
             }
+        }
+    }
+
+    #[test]
+    fn subtask_enter_long_label_does_not_overflow() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = crate::app::App::new("model".into(), std::path::PathBuf::from("."));
+        app.start_assistant_turn();
+        app.enter_subtask(1, "a".repeat(200));
+
+        let term_w = 80u16;
+        let backend = TestBackend::new(term_w, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let chat_start = TREE_PANEL_WIDTH;
+        let chat_end = term_w;
+
+        let enter_row = (0..10u16)
+            .find(|&r| row_text(&buffer, r, chat_start, chat_end).contains('▶'))
+            .expect("SubtaskEnter row not found");
+
+        // The SubtaskEnter should render on exactly one line (no wrapping).
+        // If the line overflows, Paragraph::wrap pushes content to the next row.
+        let next_row = row_text(&buffer, enter_row + 1, chat_start, chat_end);
+        assert!(
+            next_row.trim().is_empty()
+                || next_row.contains('●')
+                || next_row.contains('○')
+                || next_row.contains('⊙')
+                || next_row.contains('✗'),
+            "SubtaskEnter wrapped to next line — overflow detected\nnext row: {next_row:?}"
+        );
+    }
+
+    #[test]
+    fn subtask_enter_truncation_arithmetic() {
+        // Test current (buggy) formula overflows
+        let area_width = 60usize;
+        let prefix_w = 4; // "──▶ "
+        let label = "x".repeat(100);
+
+        let buggy_trunc = truncate(&label, area_width.saturating_sub(prefix_w + 1));
+        let buggy_used = prefix_w + buggy_trunc.chars().count() + 1;
+        assert!(
+            buggy_used > area_width,
+            "Bug should cause overflow: used={buggy_used} should > {area_width}"
+        );
+
+        // Test fixed formula fits
+        let label_budget = area_width.saturating_sub(prefix_w + 1);
+        let fixed_trunc = truncate(&label, label_budget.saturating_sub(3));
+        let fixed_used = prefix_w + fixed_trunc.chars().count() + 1;
+        assert!(
+            fixed_used <= area_width,
+            "Fixed: used={fixed_used} > area_width={area_width}"
+        );
+    }
+
+    #[test]
+    fn tree_panel_label_does_not_exceed_panel_width() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = crate::app::App::new("model".into(), std::path::PathBuf::from("."));
+        app.start_assistant_turn();
+        app.enter_subtask(1, "a".repeat(60));
+        app.enter_subtask(2, "b".repeat(60));
+        app.enter_subtask(3, "c".repeat(60));
+
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        for row in 0..20u16 {
+            let tree_row = row_text(&buffer, row, 0, TREE_PANEL_WIDTH);
+            let trimmed_len = tree_row.trim_end().chars().count();
+            assert!(
+                trimmed_len <= TREE_PANEL_WIDTH as usize,
+                "Tree row {row} overflows: {trimmed_len} chars > {TREE_PANEL_WIDTH}\nrow: {tree_row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tree_panel_prefix_arithmetic() {
+        let area_width = TREE_PANEL_WIDTH as usize;
+        for depth in 0..=5usize {
+            let indent_len = depth;
+            let connector_len = if depth > 0 { 3 } else { 0 }; // "└─ "
+            let prefix_width = indent_len + connector_len + 3;
+            let avail = area_width.saturating_sub(prefix_width).max(1);
+            let conservative_total = indent_len + connector_len + 2 + 1 + avail;
+            assert!(
+                conservative_total <= area_width,
+                "depth={depth}: {conservative_total} > {area_width}"
+            );
         }
     }
 }

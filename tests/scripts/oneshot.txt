@@ -1,0 +1,6 @@
+# Oneshot mode test (default)
+# Verifies that in default mode, the agent executes without asking clarifying questions.
+
+Write "hello" to oneshot_test.txt
+@wait 60
+@expect_file oneshot_test.txt hello

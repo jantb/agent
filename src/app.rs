@@ -1,14 +1,10 @@
 use std::collections::VecDeque;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use chrono::Local;
-
 use crate::autocomplete::Autocomplete;
 use crate::input::InputState;
-use crate::types::{ChatMessage, MessageKind, NodeInfo, NodeStatus, Role, ToolCall, ToolResult};
+use crate::types::{AgentMode, ChatMessage, MessageKind, NodeInfo, NodeStatus, Role, ToolCall, ToolResult};
 
 pub struct ModelPickerState {
     pub models: Vec<String>,
@@ -62,48 +58,6 @@ impl InterviewPickerState {
     }
 }
 
-pub struct InterviewState {
-    pub topic: String,
-    pub file_path: std::path::PathBuf,
-    pub question_count: usize,
-}
-
-impl InterviewState {
-    pub fn new(topic: String, working_dir: &std::path::Path) -> Self {
-        let file_path = working_dir.join("questionnaire.md");
-        let header = format!(
-            "---\n\n## Interview: {} ({})\n\n",
-            topic,
-            Local::now().format("%Y-%m-%d %H:%M:%S")
-        );
-        let mut f = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&file_path)
-            .expect("failed to create questionnaire.md");
-        f.write_all(header.as_bytes()).ok();
-        Self {
-            topic,
-            file_path,
-            question_count: 0,
-        }
-    }
-
-    pub fn append_qa(&mut self, question: &str, answer: &str) {
-        self.question_count += 1;
-        let entry = format!(
-            "- [ ] **Q{}: {}** ({})\n  > A: {}\n\n",
-            self.question_count,
-            question,
-            Local::now().format("%H:%M:%S"),
-            answer,
-        );
-        if let Ok(mut f) = OpenOptions::new().append(true).open(&self.file_path) {
-            f.write_all(entry.as_bytes()).ok();
-        }
-    }
-}
-
 pub struct App {
     pub messages: Vec<ChatMessage>,
     pub input: InputState,
@@ -136,7 +90,7 @@ pub struct App {
     pub available_models: Vec<String>,
     pub model_picker: Option<ModelPickerState>,
     pub interview_picker: Option<InterviewPickerState>,
-    pub interview_state: Option<InterviewState>,
+    pub mode: AgentMode,
     /// Live agent tree: nodes in enter order, with depth-based hierarchy.
     pub tree: Vec<NodeInfo>,
     /// Tool call counter for the currently active subtask node.
@@ -177,7 +131,7 @@ impl App {
             available_models: Vec::new(),
             model_picker: None,
             interview_picker: None,
-            interview_state: None,
+            mode: AgentMode::default(),
             tree: Vec::new(),
             subtask_tool_calls: 0,
         }
@@ -488,8 +442,6 @@ impl App {
         "Commands:
          — /clear, /new: clear conversation
          — /help: show this help
-         — /interview <topic>: start interview mode
-
          Keybindings:
          — Enter: send message
          — Shift+Enter: newline
@@ -500,6 +452,7 @@ impl App {
          — Ctrl+W: delete word
          — Ctrl+A: start of line
          — Ctrl+E: end of line
+         — Shift+Tab: cycle mode (plan → thorough → oneshot)
          — Ctrl+V: paste image from clipboard
          — Up/Down: input history
          — Shift+Up/Down: scroll chat
@@ -1391,32 +1344,9 @@ mod tests {
     }
 
     #[test]
-    fn interview_state_creates_file_and_appends() {
-        let dir = std::env::temp_dir().join(format!("agent_test_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut state = InterviewState::new("test topic".into(), &dir);
-        assert!(state.file_path.exists());
-        let header = std::fs::read_to_string(&state.file_path).unwrap();
-        assert!(header.contains("Interview: test topic"));
-
-        state.append_qa("What color?", "Blue");
-        let content = std::fs::read_to_string(&state.file_path).unwrap();
-        assert!(content.contains("- [ ] **Q1: What color?**"));
-        assert!(content.contains("> A: Blue"));
-
-        state.append_qa("What size?", "Large");
-        let content = std::fs::read_to_string(&state.file_path).unwrap();
-        assert!(content.contains("**Q2: What size?**"));
-        assert!(content.contains("> A: Large"));
-        assert_eq!(state.question_count, 2);
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn interview_fields_default_none() {
+    fn interview_picker_default_none_and_mode_default() {
         let app = make_app();
         assert!(app.interview_picker.is_none());
-        assert!(app.interview_state.is_none());
+        assert_eq!(app.mode, AgentMode::default());
     }
 }

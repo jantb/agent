@@ -1,0 +1,8 @@
+# Thorough mode test
+# Verifies that in thorough mode, the agent can ask clarifying questions
+# via the interview_question tool.
+
+/thorough
+I need you to create a config file but I'm not sure about the format
+@expect_event InterviewQuestion
+@wait 60

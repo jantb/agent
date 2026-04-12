@@ -30,9 +30,9 @@ Do NOT use for trivial single-step operations."
 pub fn interview_question_def() -> ToolDefinition {
     ToolDefinition {
         name: "interview_question".into(),
-        description: "Ask the user an interview question with suggested answers. \
-The user can pick a suggestion or type their own answer. Use this tool repeatedly to conduct \
-a structured interview, one question at a time."
+        description: "Ask the user a clarifying question with suggested answers. \
+Use when you encounter genuine ambiguity, unclear requirements, or need the user to decide \
+something with significant implementation impact. The user can pick a suggestion or type their own answer."
             .into(),
         parameters: json!({
             "type": "object",
@@ -281,7 +281,6 @@ pub fn built_in_tool_definitions() -> Vec<ToolDefinition> {
             source: ToolSource::BuiltIn,
         },
         delegate_task_def(),
-        interview_question_def(),
     ]
 }
 
@@ -292,7 +291,7 @@ mod tests {
     #[test]
     fn built_in_tool_definitions_count() {
         let defs = built_in_tool_definitions();
-        assert_eq!(defs.len(), 19);
+        assert_eq!(defs.len(), 18);
         let names: Vec<_> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"write_file"));
@@ -312,6 +311,5 @@ mod tests {
         assert!(names.contains(&"read_image"));
         assert!(names.contains(&"read_pdf"));
         assert!(names.contains(&"delegate_task"));
-        assert!(names.contains(&"interview_question"));
     }
 }
