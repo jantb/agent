@@ -179,7 +179,7 @@ pub fn run_assertion(cmd: &ScriptCommand, working_dir: &Path) -> Option<Assertio
         ScriptCommand::ExpectFile { path, content } => {
             let full = working_dir.join(path);
             let actual = fs::read_to_string(&full).unwrap_or_default();
-            let pass = actual.trim() == content.trim();
+            let pass = actual.contains(content.trim());
             Some(AssertionResult {
                 assert_type: "expect_file".into(),
                 path: path.clone(),

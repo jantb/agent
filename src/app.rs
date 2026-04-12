@@ -82,7 +82,11 @@ impl InterviewState {
             .open(&file_path)
             .expect("failed to create questionnaire.md");
         f.write_all(header.as_bytes()).ok();
-        Self { topic, file_path, question_count: 0 }
+        Self {
+            topic,
+            file_path,
+            question_count: 0,
+        }
     }
 
     pub fn append_qa(&mut self, question: &str, answer: &str) {

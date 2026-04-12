@@ -165,4 +165,23 @@ mod tests {
             UiCommand::Backspace
         );
     }
+
+    #[test]
+    fn streaming_blocks_arrow_and_tab_keys() {
+        // Documents the root cause of the interview picker bug:
+        // when streaming=true, Up/Down/Tab all become Ignore.
+        // The fix is in main.rs where effective_streaming overrides this when a picker is active.
+        assert!(matches!(
+            map_key(key(KeyCode::Up, KeyModifiers::NONE), true),
+            UiCommand::Ignore
+        ));
+        assert!(matches!(
+            map_key(key(KeyCode::Down, KeyModifiers::NONE), true),
+            UiCommand::Ignore
+        ));
+        assert!(matches!(
+            map_key(key(KeyCode::Tab, KeyModifiers::NONE), true),
+            UiCommand::Ignore
+        ));
+    }
 }

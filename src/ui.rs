@@ -618,11 +618,7 @@ fn draw_model_picker(frame: &mut Frame, picker: &crate::app::ModelPickerState, a
     );
 }
 
-fn draw_interview_picker(
-    frame: &mut Frame,
-    picker: &crate::app::InterviewPickerState,
-    area: Rect,
-) {
+fn draw_interview_picker(frame: &mut Frame, picker: &crate::app::InterviewPickerState, area: Rect) {
     let max_width = (area.width * 3 / 4).max(30).min(area.width);
     let inner_width = max_width.saturating_sub(2) as usize;
 
@@ -633,7 +629,9 @@ fn draw_interview_picker(
     for wl in word_wrap(&picker.question, inner_width) {
         lines.push(Line::from(Span::styled(
             wl,
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )));
     }
     lines.push(Line::from(""));
@@ -649,9 +647,11 @@ fn draw_interview_picker(
         let marker = if selected { "▸ " } else { "  " };
         lines.push(Line::from(Span::styled(
             format!("{marker}{suggestion}"),
-            Style::default().bg(bg).fg(fg).add_modifier(
-                if selected { Modifier::BOLD } else { Modifier::empty() },
-            ),
+            Style::default().bg(bg).fg(fg).add_modifier(if selected {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            }),
         )));
     }
 
@@ -662,19 +662,30 @@ fn draw_interview_picker(
     )));
     let custom_marker = if picker.custom_mode { "▸ " } else { "  " };
     let cursor = if picker.custom_mode { "█" } else { "" };
-    let custom_bg = if picker.custom_mode { Color::DarkGray } else { Color::Reset };
+    let custom_bg = if picker.custom_mode {
+        Color::DarkGray
+    } else {
+        Color::Reset
+    };
     lines.push(Line::from(Span::styled(
         format!("{custom_marker}{}{cursor}", picker.custom_input),
-        Style::default().bg(custom_bg).fg(Color::White).add_modifier(
-            if picker.custom_mode { Modifier::BOLD } else { Modifier::empty() },
-        ),
+        Style::default()
+            .bg(custom_bg)
+            .fg(Color::White)
+            .add_modifier(if picker.custom_mode {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            }),
     )));
 
     // Footer
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "Tab: toggle  Enter: select  Esc: skip",
-        Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC),
     )));
 
     let popup_height = (lines.len() as u16 + 2).min(area.height);

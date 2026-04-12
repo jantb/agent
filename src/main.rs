@@ -163,16 +163,22 @@ async fn main() -> anyhow::Result<()> {
         if cli.headless {
             let commands = script::parse_script(script_path)?;
             let mut report = TestReport::new(&cli.model);
+            let mut interview_state: Option<InterviewState> = None;
 
             for cmd in &commands {
                 match cmd {
                     ScriptCommand::Send(text) => {
                         let step_start = std::time::Instant::now();
 
-                        action_tx
-                            .send(UserAction::SendMessage(text.clone(), vec![]))
-                            .await
-                            .ok();
+                        let action = if let Some(topic) = text.trim().strip_prefix("/interview") {
+                            let topic = topic.trim();
+                            let topic = if topic.is_empty() { "general" } else { topic };
+                            interview_state = Some(InterviewState::new(topic.to_string(), &working_dir));
+                            UserAction::StartInterview(topic.to_string())
+                        } else {
+                            UserAction::SendMessage(text.clone(), vec![])
+                        };
+                        action_tx.send(action).await.ok();
                         println!("[send] {text}");
 
                         let result = tokio::time::timeout(
@@ -248,6 +254,9 @@ async fn main() -> anyhow::Result<()> {
                                             let answer = suggestions.into_iter().next().unwrap_or_else(|| "yes".into());
                                             println!("[interview] Q: {question} -> A: {answer}");
                                             log.push(format!("InterviewQuestion: {question}"));
+                                            if let Some(state) = interview_state.as_mut() {
+                                                state.append_qa(&question, &answer);
+                                            }
                                             let _ = answer_tx.0.send(answer);
                                         }
                                         None => {
@@ -490,7 +499,8 @@ async fn handle_terminal_event(
 ) {
     match event {
         Some(Ok(Event::Key(key))) => {
-            let cmd = keys::map_key(key, app.streaming);
+            let picker_active = app.interview_picker.is_some() || app.model_picker.is_some();
+            let cmd = keys::map_key(key, app.streaming && !picker_active);
             apply_command(cmd, app, action_tx).await;
         }
         Some(Ok(Event::Paste(data))) => {
@@ -546,8 +556,11 @@ async fn apply_command(cmd: keys::UiCommand, app: &mut App, action_tx: &mpsc::Se
             UiCommand::Submit => {
                 if let Some(answer) = app.interview_picker.as_mut().and_then(|p| p.submit()) {
                     if let Some(state) = app.interview_state.as_mut() {
-                        let question = app.interview_picker.as_ref()
-                            .map(|p| p.question.clone()).unwrap_or_default();
+                        let question = app
+                            .interview_picker
+                            .as_ref()
+                            .map(|p| p.question.clone())
+                            .unwrap_or_default();
                         state.append_qa(&question, &answer);
                     }
                 }
@@ -563,7 +576,9 @@ async fn apply_command(cmd: keys::UiCommand, app: &mut App, action_tx: &mpsc::Se
                 return;
             }
             UiCommand::Quit => {} // fall through
-            _ => { return; }
+            _ => {
+                return;
+            }
         }
     }
 
@@ -759,8 +774,17 @@ async fn handle_slash_or_send(text: String, app: &mut App, action_tx: &mpsc::Sen
             kind: MessageKind::Text,
         });
     } else if text.trim().starts_with("/interview") {
-        let topic = text.trim().strip_prefix("/interview").unwrap().trim().to_string();
-        let topic = if topic.is_empty() { "General".to_string() } else { topic };
+        let topic = text
+            .trim()
+            .strip_prefix("/interview")
+            .unwrap()
+            .trim()
+            .to_string();
+        let topic = if topic.is_empty() {
+            "General".to_string()
+        } else {
+            topic
+        };
         app.interview_state = Some(InterviewState::new(topic.clone(), &app.working_dir));
         app.add_user_message(format!("/interview {topic}"));
         app.start_assistant_turn();
@@ -831,7 +855,11 @@ async fn handle_agent_event(
             *current_depth = depth.saturating_sub(1);
             app.exit_subtask(depth);
         }
-        Some(AgentEvent::InterviewQuestion { question, suggestions, answer_tx }) => {
+        Some(AgentEvent::InterviewQuestion {
+            question,
+            suggestions,
+            answer_tx,
+        }) => {
             app.interview_picker = Some(InterviewPickerState {
                 question,
                 suggestions,

@@ -32,7 +32,8 @@ pub fn interview_question_def() -> ToolDefinition {
         name: "interview_question".into(),
         description: "Ask the user an interview question with suggested answers. \
 The user can pick a suggestion or type their own answer. Use this tool repeatedly to conduct \
-a structured interview, one question at a time.".into(),
+a structured interview, one question at a time."
+            .into(),
         parameters: json!({
             "type": "object",
             "properties": {

@@ -9,7 +9,9 @@ use crate::{
     ollama::OllamaClient,
     session::{Session, SessionMessage},
     tools::execute_built_in,
-    types::{AgentEvent, OneshotTx, Role, ToolCall, ToolDefinition, ToolResult, ToolSource, TurnOutcome},
+    types::{
+        AgentEvent, OneshotTx, Role, ToolCall, ToolDefinition, ToolResult, ToolSource, TurnOutcome,
+    },
 };
 
 /// Returns true if the model should use flat (single-level) mode.
@@ -51,7 +53,8 @@ You have full tool access. Complete everything yourself — no delegation needed
 3. Sandboxed to {dir}.
 4. On error, report clearly rather than looping.
 5. Return concise summaries. Use file:line references.
-6. Think briefly. Act fast."
+6. Think briefly. Act fast.
+7. TDD: when fixing bugs or adding features, write a failing test first, run it to confirm failure, implement the fix, then run the test again to verify it passes."
     );
     if !memory_index.is_empty() {
         prompt.push_str("\n\n## Stored memories\n");
@@ -75,6 +78,7 @@ Your ONLY tool is `delegate_task`. You MUST call it for EVERY request — no exc
 4. For long output (reports, listings, code), tell sub-agents to write results to a file rather than returning inline.
 5. After delegation, synthesize a concise answer (1-3 paragraphs).
 6. Think briefly. Act fast.
+7. TDD: when fixing bugs or adding features, instruct sub-agents to write a failing test first, run it, implement the fix, then run the test again.
 
 ## Examples
 - User: \"Write hello to out.txt\" → delegate_task(\"Write the text 'hello' to the file out.txt\")
@@ -118,7 +122,8 @@ Write idiomatic, compact code. Fix root causes, not symptoms.
 3. Sandboxed to {dir}.
 4. On error, report clearly rather than looping.
 5. For long output (>20 lines), write to a file and return the path + 1-sentence summary.
-6. Return concise summaries (under 500 words). Use file:line references."
+6. Return concise summaries (under 500 words). Use file:line references.
+7. TDD: when fixing bugs or adding features, write a failing test first, run it to confirm failure, implement the fix, then run the test again to verify it passes."
     )
 }
 
@@ -460,18 +465,29 @@ impl AgentTask {
                     images: vec![],
                 }
             } else if call.name == "interview_question" {
-                let question = call.arguments.get("question")
-                    .and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let suggestions: Vec<String> = call.arguments.get("suggestions")
+                let question = call
+                    .arguments
+                    .get("question")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let suggestions: Vec<String> = call
+                    .arguments
+                    .get("suggestions")
                     .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let (tx, rx) = tokio::sync::oneshot::channel::<String>();
                 self.emit(AgentEvent::InterviewQuestion {
                     question,
                     suggestions,
                     answer_tx: OneshotTx(tx),
-                }).await;
+                })
+                .await;
                 let answer = rx.await.unwrap_or_else(|_| "cancelled".into());
                 ToolResult {
                     call_id: call.id.clone(),
