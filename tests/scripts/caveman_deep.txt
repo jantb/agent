@@ -1,0 +1,23 @@
+# Caveman deep test — non-flat (hierarchical) mode
+# Multi-step tasks at each level to measure token savings.
+
+/mode
+/mode
+
+# Baseline: caveman off
+Write a shell script called cm_base.sh that prints "hello world", checks if a file exists, and loops 1 to 5 printing each number. Include comments.
+@wait 120
+@expect_file cm_base.sh hello
+
+# Caveman full
+/caveman
+/caveman
+Write a shell script called cm_full.sh that prints "hello world", checks if a file exists, and loops 1 to 5 printing each number. Include comments.
+@wait 120
+@expect_file cm_full.sh hello
+
+# Caveman ultra
+/caveman
+Write a shell script called cm_ultra.sh that prints "hello world", checks if a file exists, and loops 1 to 5 printing each number. Include comments.
+@wait 120
+@expect_file cm_ultra.sh hello

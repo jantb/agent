@@ -1,0 +1,31 @@
+# Caveman mode test
+# Verifies /caveman cycles levels and the agent produces output in each active level.
+# Uses /mode to switch to oneshot so the agent acts immediately.
+
+# Switch to oneshot mode (skip interview questions)
+/mode
+/mode
+
+# Test 1: cycle to lite, do a task
+/caveman
+Write "lite_ok" to caveman_lite.txt
+@wait 60
+@expect_file caveman_lite.txt lite_ok
+
+# Test 2: cycle to full, do a task
+/caveman
+Write "full_ok" to caveman_full.txt
+@wait 60
+@expect_file caveman_full.txt full_ok
+
+# Test 3: cycle to ultra, do a task
+/caveman
+Write "ultra_ok" to caveman_ultra.txt
+@wait 60
+@expect_file caveman_ultra.txt ultra_ok
+
+# Test 4: cycle back to off, verify still works
+/caveman
+Write "off_ok" to caveman_off.txt
+@wait 60
+@expect_file caveman_off.txt off_ok
