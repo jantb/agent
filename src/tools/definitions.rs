@@ -321,7 +321,10 @@ mod tests {
     fn delegate_task_has_system_prompt_param() {
         let def = delegate_task_def();
         let props = def.parameters.get("properties").unwrap();
-        assert!(props.get("system_prompt").is_some(), "delegate_task should have system_prompt property");
+        assert!(
+            props.get("system_prompt").is_some(),
+            "delegate_task should have system_prompt property"
+        );
     }
 
     #[test]

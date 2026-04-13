@@ -13,7 +13,8 @@ use tokio::time::{interval, Duration};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use agent::agent::{
-    is_flat_model, system_prompt_for_depth, AgentTask, AgentTaskConfig, UserAction,
+    is_flat_model, mcp_tools_prompt_section, system_prompt_for_depth, AgentTask, AgentTaskConfig,
+    UserAction,
 };
 use agent::app::{App, InterviewPickerState, ModelPickerState};
 use agent::autocomplete;
@@ -25,7 +26,7 @@ use agent::ollama::OllamaClient;
 use agent::script::{self, ScriptCommand, StepReport, StepStatus, TestReport};
 use agent::session::{ensure_gitignore, Session};
 use agent::tools::built_in_tool_definitions;
-use agent::types::{AgentEvent, AgentMode, CavemanLevel, ChatMessage, MessageKind};
+use agent::types::{AgentEvent, AgentMode, CavemanLevel, ChatMessage, MessageKind, ToolSource};
 use agent::ui;
 
 #[derive(Parser)]
@@ -115,8 +116,20 @@ async fn main() -> anyhow::Result<()> {
     // Load or create session
     let memory_index = memory::build_memory_index(&working_dir);
     let flat = is_flat_model(&cli.model);
-    let sys_prompt =
-        system_prompt_for_depth(0, &working_dir, &memory_index, flat, CavemanLevel::Off);
+    let mcp_only: Vec<_> = all_tools
+        .iter()
+        .filter(|t| t.source == ToolSource::Mcp)
+        .cloned()
+        .collect();
+    let mcp_tools_context = mcp_tools_prompt_section(&mcp_only);
+    let sys_prompt = system_prompt_for_depth(
+        0,
+        &working_dir,
+        &memory_index,
+        &mcp_tools_context,
+        flat,
+        CavemanLevel::Off,
+    );
     let (session, resumed) = match Session::load(&working_dir)? {
         Some(s) => {
             let date = s.updated_at.format("%Y-%m-%d %H:%M").to_string();
@@ -157,6 +170,7 @@ async fn main() -> anyhow::Result<()> {
         flat,
         caveman: CavemanLevel::Off,
         mode: AgentMode::default(),
+        mcp_tools_context,
     });
     tokio::spawn(async move { agent_task.run().await });
 

@@ -464,12 +464,18 @@ mod tests {
 
         let tools = tools_for_depth(&all, 0, true, AgentMode::Oneshot);
         let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"test_tool"), "MCP tool must be present in flat mode");
-        assert!(!names.contains(&"delegate_task"), "delegate_task must be absent in flat mode");
+        assert!(
+            names.contains(&"test_tool"),
+            "MCP tool must be present in flat mode"
+        );
+        assert!(
+            !names.contains(&"delegate_task"),
+            "delegate_task must be absent in flat mode"
+        );
     }
 
     #[test]
-    fn mcp_tool_included_at_depth_0_hierarchical() {
+    fn mcp_tool_excluded_at_depth_0_hierarchical() {
         use crate::agent::tools_for_depth;
         use crate::tools::built_in_tool_definitions;
         use crate::types::AgentMode;
@@ -479,7 +485,28 @@ mod tests {
 
         let tools = tools_for_depth(&all, 0, false, AgentMode::Oneshot);
         let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"test_tool"), "MCP tools must be available at all depths");
+        assert!(
+            !names.contains(&"test_tool"),
+            "MCP tools must NOT be available at depth 0 hierarchical"
+        );
+        assert!(names.contains(&"delegate_task"));
+    }
+
+    #[test]
+    fn mcp_tool_excluded_at_depth_1_hierarchical() {
+        use crate::agent::tools_for_depth;
+        use crate::tools::built_in_tool_definitions;
+        use crate::types::AgentMode;
+
+        let mut all = built_in_tool_definitions();
+        all.push(mcp_tool_def());
+
+        let tools = tools_for_depth(&all, 1, false, AgentMode::Oneshot);
+        let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            !names.contains(&"test_tool"),
+            "MCP tools must NOT be available at depth 1 hierarchical"
+        );
         assert!(names.contains(&"delegate_task"));
     }
 
@@ -494,7 +521,10 @@ mod tests {
 
         let tools = tools_for_depth(&all, 2, false, AgentMode::Oneshot);
         let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"test_tool"), "MCP tool must be present at depth 2 hierarchical");
+        assert!(
+            names.contains(&"test_tool"),
+            "MCP tool must be present at depth 2 hierarchical"
+        );
         assert!(!names.contains(&"delegate_task"));
     }
 
