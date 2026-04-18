@@ -4,7 +4,7 @@ use crate::tools::IGNORE_DIRS;
 use crate::types::ToolCall;
 use base64::Engine as _;
 
-use super::resolve_path;
+use crate::tools::resolve_safe;
 
 pub async fn run_read_file(call: &ToolCall, working_dir: &Path) -> Result<String, String> {
     let path_str = call.arguments["path"]
@@ -17,7 +17,7 @@ pub async fn run_read_file(call: &ToolCall, working_dir: &Path) -> Result<String
     let end = call.arguments["end_line"].as_u64().map(|n| n as usize);
     let working_dir = working_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let path = resolve_path(&path_str, &working_dir);
+        let path = resolve_safe(&path_str, &working_dir)?;
         let content = std::fs::read_to_string(&path).map_err(|e| format!("read error: {e}"))?;
 
         let all_lines: Vec<&str> = content.lines().collect();
@@ -80,7 +80,7 @@ pub async fn run_write_file(call: &ToolCall, working_dir: &Path) -> Result<Strin
     let content = call.arguments["content"]
         .as_str()
         .ok_or("missing 'content' argument")?;
-    let path = resolve_path(path_str, working_dir);
+    let path = resolve_safe(path_str, working_dir)?;
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -107,7 +107,7 @@ pub async fn run_list_dir(call: &ToolCall, working_dir: &Path) -> Result<String,
         .unwrap_or(0);
     let working_dir = working_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let path = resolve_path(&path_str, &working_dir);
+        let path = resolve_safe(&path_str, &working_dir)?;
         let mut out = String::new();
         list_tree(&path, &mut out, 0, max_depth)?;
         Ok(out)
@@ -127,7 +127,7 @@ pub async fn run_append_file(call: &ToolCall, working_dir: &Path) -> Result<Stri
         .to_string();
     let working_dir = working_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let path = resolve_path(&path_str, &working_dir);
+        let path = resolve_safe(&path_str, &working_dir)?;
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
             .append(true)
@@ -149,7 +149,7 @@ pub async fn run_delete_path(call: &ToolCall, working_dir: &Path) -> Result<Stri
         .to_string();
     let working_dir = working_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let path = resolve_path(&path_str, &working_dir);
+        let path = resolve_safe(&path_str, &working_dir)?;
         let meta = std::fs::metadata(&path).map_err(|e| format!("stat error: {e}"))?;
         if meta.is_dir() {
             std::fs::remove_dir(&path)
@@ -218,7 +218,7 @@ pub async fn run_read_pdf(call: &ToolCall, working_dir: &Path) -> Result<String,
     let pages_str = call.arguments["pages"].as_str().map(|s| s.to_string());
     let working_dir = working_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let path = resolve_path(&path_str, &working_dir);
+        let path = resolve_safe(&path_str, &working_dir)?;
         let full_text = pdf_extract::extract_text(&path)
             .map_err(|e| format!("pdf extract error: {e}"))?;
 
@@ -284,7 +284,7 @@ pub async fn run_read_image(
         .to_string();
     let working_dir = working_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let path = resolve_path(&path_str, &working_dir);
+        let path = resolve_safe(&path_str, &working_dir)?;
         let bytes = std::fs::read(&path).map_err(|e| format!("read error: {e}"))?;
         let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
         let filename = path

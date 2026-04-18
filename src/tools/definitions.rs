@@ -57,6 +57,42 @@ something with significant implementation impact. The user can pick a suggestion
     }
 }
 
+pub fn update_plan_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "update_plan".into(),
+        description: "Create or replace the current task plan. Pass the full list of items each \
+time. Use this to track multi-step work. Mark exactly one item in_progress at a time; mark \
+completed as soon as done — don't batch."
+            .into(),
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "description": "Full list of plan items (replaces current plan)",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "content": {
+                                "type": "string",
+                                "description": "Description of the task"
+                            },
+                            "status": {
+                                "type": "string",
+                                "enum": ["pending", "in_progress", "completed"],
+                                "description": "Current status of the task"
+                            }
+                        },
+                        "required": ["content", "status"]
+                    }
+                }
+            },
+            "required": ["items"]
+        }),
+        source: ToolSource::BuiltIn,
+    }
+}
+
 pub fn built_in_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
@@ -285,6 +321,7 @@ pub fn built_in_tool_definitions() -> Vec<ToolDefinition> {
             source: ToolSource::BuiltIn,
         },
         delegate_task_def(),
+        update_plan_def(),
     ]
 }
 
@@ -295,7 +332,7 @@ mod tests {
     #[test]
     fn built_in_tool_definitions_count() {
         let defs = built_in_tool_definitions();
-        assert_eq!(defs.len(), 18);
+        assert_eq!(defs.len(), 19);
         let names: Vec<_> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"write_file"));
@@ -315,6 +352,37 @@ mod tests {
         assert!(names.contains(&"read_image"));
         assert!(names.contains(&"read_pdf"));
         assert!(names.contains(&"delegate_task"));
+        assert!(names.contains(&"update_plan"));
+    }
+
+    #[test]
+    fn update_plan_def_has_items_required() {
+        let def = update_plan_def();
+        let required = def.parameters.get("required").unwrap().as_array().unwrap();
+        assert!(required.iter().any(|v| v.as_str() == Some("items")));
+    }
+
+    #[test]
+    fn update_plan_def_item_schema_has_content_and_status() {
+        let def = update_plan_def();
+        let items_schema = def.parameters["properties"]["items"]["items"].clone();
+        let props = items_schema["properties"].as_object().unwrap();
+        assert!(props.contains_key("content"));
+        assert!(props.contains_key("status"));
+    }
+
+    #[test]
+    fn update_plan_def_status_enum_constrained() {
+        let def = update_plan_def();
+        let status_enum = def.parameters["properties"]["items"]["items"]["properties"]["status"]
+            ["enum"]
+            .as_array()
+            .unwrap();
+        let values: Vec<&str> = status_enum.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(values.contains(&"pending"));
+        assert!(values.contains(&"in_progress"));
+        assert!(values.contains(&"completed"));
+        assert_eq!(values.len(), 3);
     }
 
     #[test]

@@ -2,6 +2,20 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanItem {
+    pub content: String,
+    pub status: PlanStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     System,
@@ -104,6 +118,7 @@ pub enum AgentEvent {
         suggestions: Vec<String>,
         answer_tx: OneshotTx,
     },
+    PlanUpdated(Vec<PlanItem>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +145,35 @@ pub enum TurnOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plan_status_serde_round_trip() {
+        let cases = [
+            (PlanStatus::Pending, "\"pending\""),
+            (PlanStatus::InProgress, "\"in_progress\""),
+            (PlanStatus::Completed, "\"completed\""),
+        ];
+        for (status, expected_json) in &cases {
+            let json = serde_json::to_string(status).unwrap();
+            assert_eq!(
+                &json, expected_json,
+                "serialization mismatch for {status:?}"
+            );
+            let back: PlanStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(&back, status, "deserialization mismatch for {status:?}");
+        }
+    }
+
+    #[test]
+    fn plan_item_serde_round_trip() {
+        let item = PlanItem {
+            content: "do something".into(),
+            status: PlanStatus::InProgress,
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        let back: PlanItem = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, item);
+    }
 
     #[test]
     fn message_new_sets_role_and_content() {
@@ -221,6 +265,9 @@ pub enum MessageKind {
     },
     SubtaskExit {
         depth: usize,
+    },
+    PlanUpdate {
+        items: Vec<PlanItem>,
     },
 }
 

@@ -467,8 +467,8 @@ mod tests {
 
     #[test]
     fn mcp_tool_included_in_flat_mode_depth_0() {
-        use crate::agent::tools_for_depth;
         use crate::tools::built_in_tool_definitions;
+        use crate::tools::selection::tools_for_depth;
         use crate::types::AgentMode;
 
         let mut all = built_in_tool_definitions();
@@ -488,8 +488,8 @@ mod tests {
 
     #[test]
     fn mcp_tool_excluded_at_depth_0_hierarchical() {
-        use crate::agent::tools_for_depth;
         use crate::tools::built_in_tool_definitions;
+        use crate::tools::selection::tools_for_depth;
         use crate::types::AgentMode;
 
         let mut all = built_in_tool_definitions();
@@ -506,8 +506,8 @@ mod tests {
 
     #[test]
     fn mcp_tool_excluded_at_depth_1_hierarchical() {
-        use crate::agent::tools_for_depth;
         use crate::tools::built_in_tool_definitions;
+        use crate::tools::selection::tools_for_depth;
         use crate::types::AgentMode;
 
         let mut all = built_in_tool_definitions();
@@ -524,8 +524,8 @@ mod tests {
 
     #[test]
     fn mcp_tool_included_at_depth_2_hierarchical() {
-        use crate::agent::tools_for_depth;
         use crate::tools::built_in_tool_definitions;
+        use crate::tools::selection::tools_for_depth;
         use crate::types::AgentMode;
 
         let mut all = built_in_tool_definitions();

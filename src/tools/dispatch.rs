@@ -3,11 +3,30 @@ use std::time::Instant;
 
 use tracing::{debug, warn};
 
-use crate::types::{ToolCall, ToolResult};
+use crate::types::{AgentMode, ToolCall, ToolResult};
 
 use super::builtin;
+use super::PLAN_WRITE_TOOLS;
 
-pub async fn execute_built_in(call: &ToolCall, working_dir: &Path) -> ToolResult {
+pub(crate) async fn execute_built_in_with_mode(
+    call: &ToolCall,
+    working_dir: &Path,
+    mode: AgentMode,
+) -> ToolResult {
+    // Belt-and-suspenders: block write tools in Plan mode even if the tool filter missed them.
+    if mode == AgentMode::Plan && PLAN_WRITE_TOOLS.contains(&call.name.as_str()) {
+        return ToolResult {
+            call_id: call.id.clone(),
+            output: format!(
+                "error: '{}' is disabled in plan mode — write tools are not available. \
+                 Ask the user to switch out of plan mode to apply changes.",
+                call.name
+            ),
+            is_error: true,
+            images: vec![],
+        };
+    }
+
     let t0 = Instant::now();
     debug!(tool = %call.name, "built-in tool start");
 
@@ -54,6 +73,7 @@ pub async fn execute_built_in(call: &ToolCall, working_dir: &Path) -> ToolResult
         "forget" => builtin::run_forget(call, working_dir).await,
         "list_memories" => builtin::run_list_memories(call, working_dir).await,
         "delegate_task" => Err("delegate_task must be intercepted before dispatch".into()),
+        "update_plan" => Err("update_plan must be intercepted before dispatch".into()),
         "read_image" => unreachable!("read_image handled above"),
         other => Err(format!("unknown built-in tool: {other}")),
     };
@@ -88,6 +108,10 @@ mod tests {
     use std::io::Write;
     use tempfile::TempDir;
 
+    async fn execute_built_in(call: &ToolCall, working_dir: &std::path::Path) -> ToolResult {
+        execute_built_in_with_mode(call, working_dir, AgentMode::Oneshot).await
+    }
+
     fn make_call(name: &str, args: serde_json::Value) -> ToolCall {
         ToolCall {
             id: "test-id".into(),
@@ -98,6 +122,65 @@ mod tests {
 
     fn setup_dir() -> TempDir {
         TempDir::new().unwrap()
+    }
+
+    #[tokio::test]
+    async fn plan_mode_blocks_write_file() {
+        let dir = setup_dir();
+        let call = make_call("write_file", json!({"path": "x.txt", "content": "hi"}));
+        let result = execute_built_in_with_mode(&call, dir.path(), AgentMode::Plan).await;
+        assert!(result.is_error);
+        assert!(result.output.contains("disabled in plan mode"));
+    }
+
+    #[tokio::test]
+    async fn plan_mode_blocks_edit_file() {
+        let dir = setup_dir();
+        let call = make_call(
+            "edit_file",
+            json!({"path": "x.txt", "old_string": "a", "new_string": "b"}),
+        );
+        let result = execute_built_in_with_mode(&call, dir.path(), AgentMode::Plan).await;
+        assert!(result.is_error);
+        assert!(result.output.contains("disabled in plan mode"));
+    }
+
+    #[tokio::test]
+    async fn plan_mode_blocks_replace_lines() {
+        let dir = setup_dir();
+        let call = make_call(
+            "replace_lines",
+            json!({"path": "x.txt", "start_line": 1, "end_line": 1, "new_content": "x"}),
+        );
+        let result = execute_built_in_with_mode(&call, dir.path(), AgentMode::Plan).await;
+        assert!(result.is_error);
+        assert!(result.output.contains("disabled in plan mode"));
+    }
+
+    #[tokio::test]
+    async fn plan_mode_blocks_append_file() {
+        let dir = setup_dir();
+        let call = make_call("append_file", json!({"path": "x.txt", "content": "hi"}));
+        let result = execute_built_in_with_mode(&call, dir.path(), AgentMode::Plan).await;
+        assert!(result.is_error);
+        assert!(result.output.contains("disabled in plan mode"));
+    }
+
+    #[tokio::test]
+    async fn plan_mode_blocks_delete_path() {
+        let dir = setup_dir();
+        let call = make_call("delete_path", json!({"path": "x.txt"}));
+        let result = execute_built_in_with_mode(&call, dir.path(), AgentMode::Plan).await;
+        assert!(result.is_error);
+        assert!(result.output.contains("disabled in plan mode"));
+    }
+
+    #[tokio::test]
+    async fn oneshot_mode_does_not_block_write_file() {
+        let dir = setup_dir();
+        let call = make_call("write_file", json!({"path": "x.txt", "content": "hello"}));
+        let result = execute_built_in_with_mode(&call, dir.path(), AgentMode::Oneshot).await;
+        assert!(!result.is_error, "{}", result.output);
     }
 
     #[tokio::test]

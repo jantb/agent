@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::types::ToolCall;
 
-use super::resolve_path;
+use crate::tools::resolve_safe;
 
 pub async fn run_edit_file(call: &ToolCall, working_dir: &Path) -> Result<String, String> {
     let path_str = call.arguments["path"]
@@ -28,7 +28,7 @@ pub async fn run_edit_file(call: &ToolCall, working_dir: &Path) -> Result<String
 
     let working_dir = working_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let path = resolve_path(&path_str, &working_dir);
+        let path = resolve_safe(&path_str, &working_dir)?;
         let content = std::fs::read_to_string(&path).map_err(|e| format!("read error: {e}"))?;
 
         let match_count = content.matches(old_string.as_str()).count();
@@ -102,7 +102,7 @@ pub async fn run_replace_lines(call: &ToolCall, working_dir: &Path) -> Result<St
         .to_string();
     let working_dir = working_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let path = resolve_path(&path_str, &working_dir);
+        let path = resolve_safe(&path_str, &working_dir)?;
         let content = std::fs::read_to_string(&path).map_err(|e| format!("read error: {e}"))?;
         let mut lines: Vec<&str> = content.lines().collect();
         let total = lines.len();
@@ -218,8 +218,8 @@ pub async fn run_diff_files(call: &ToolCall, working_dir: &Path) -> Result<Strin
         .to_string();
     let working_dir = working_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let pa = resolve_path(&path_a, &working_dir);
-        let pb = resolve_path(&path_b, &working_dir);
+        let pa = resolve_safe(&path_a, &working_dir)?;
+        let pb = resolve_safe(&path_b, &working_dir)?;
         let ca = std::fs::read_to_string(&pa).map_err(|e| format!("read error {path_a}: {e}"))?;
         let cb = std::fs::read_to_string(&pb).map_err(|e| format!("read error {path_b}: {e}"))?;
         let la: Vec<&str> = ca.lines().collect();

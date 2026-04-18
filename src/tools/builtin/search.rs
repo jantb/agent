@@ -5,7 +5,7 @@ use regex::Regex;
 use crate::tools::IGNORE_DIRS;
 use crate::types::ToolCall;
 
-use super::resolve_path;
+use crate::tools::resolve_safe;
 
 pub async fn run_search_files(call: &ToolCall, working_dir: &Path) -> Result<String, String> {
     let pattern = call.arguments["pattern"]
@@ -19,7 +19,7 @@ pub async fn run_search_files(call: &ToolCall, working_dir: &Path) -> Result<Str
     let is_regex = call.arguments["is_regex"].as_bool().unwrap_or(false);
     let working_dir = working_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let root = resolve_path(&path_str, &working_dir);
+        let root = resolve_safe(&path_str, &working_dir)?;
         let matcher: Box<dyn Fn(&str) -> bool + Send> = if is_regex {
             let re = Regex::new(&pattern).map_err(|e| format!("invalid regex: {e}"))?;
             Box::new(move |line: &str| re.is_match(line))
@@ -49,7 +49,7 @@ pub async fn run_glob_files(call: &ToolCall, working_dir: &Path) -> Result<Strin
     let base_str = call.arguments["path"].as_str().unwrap_or(".").to_string();
     let working_dir = working_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let base = resolve_path(&base_str, &working_dir);
+        let base = resolve_safe(&base_str, &working_dir)?;
         let full_pattern = base.join(&pattern);
         let full_pattern_str = full_pattern.to_string_lossy().to_string();
         let mut results = Vec::new();
@@ -95,7 +95,7 @@ pub async fn run_line_count(call: &ToolCall, working_dir: &Path) -> Result<Strin
         .unwrap_or_default();
     let working_dir = working_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let root = resolve_path(&base_str, &working_dir);
+        let root = resolve_safe(&base_str, &working_dir)?;
         let mut files: Vec<(PathBuf, usize)> = Vec::new();
         count_lines_recursive(&root, &exts, &mut files, 0)?;
         if files.is_empty() {
