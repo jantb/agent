@@ -16,6 +16,7 @@ impl App {
             depth: 0,
             label: "orchestrator".into(),
             status: NodeStatus::Active,
+            context_used: 0,
         });
     }
 
@@ -80,10 +81,14 @@ impl App {
         self.last_eval_duration_ns = Some(eval_duration_ns);
         if depth == 0 {
             self.last_prompt_eval_count = Some(prompt_eval_count);
-            self.context_used += prompt_eval_count;
+            self.context_used = prompt_eval_count;
         }
         self.total_tokens_down += eval_count;
         self.total_tokens_up += prompt_eval_count;
+        // Update per-node context bar: find last node at this depth.
+        if let Some(node) = self.tree.iter_mut().rfind(|n| n.depth == depth) {
+            node.context_used = prompt_eval_count;
+        }
     }
 
     pub fn elapsed_secs(&self) -> Option<f64> {
@@ -325,6 +330,53 @@ mod tests {
         assert_eq!(app.last_prompt_eval_count, Some(500));
         assert_eq!(app.total_tokens_down, 150);
         assert_eq!(app.total_tokens_up, 700);
+    }
+
+    #[test]
+    fn context_used_reflects_latest_prompt_not_sum() {
+        let mut app = make_app();
+        app.update_turn_stats(100, 1_000_000_000, 200, 0);
+        assert_eq!(app.context_used, 200);
+        app.update_turn_stats(50, 500_000_000, 275, 0);
+        // prompt_eval_count 275 already includes prior history — counter must SET, not sum
+        assert_eq!(app.context_used, 275);
+    }
+
+    #[test]
+    fn context_used_not_polluted_by_subagent_turns() {
+        let mut app = make_app();
+        app.update_turn_stats(100, 1_000_000_000, 200, 0);
+        // subagent runs many turns with its own growing prompt — must NOT affect main counter
+        app.update_turn_stats(50, 500_000_000, 5000, 1);
+        app.update_turn_stats(50, 500_000_000, 8000, 2);
+        assert_eq!(app.context_used, 200);
+        // next main-thread turn: counter reflects its own prompt size only
+        app.update_turn_stats(100, 1_000_000_000, 350, 0);
+        assert_eq!(app.context_used, 350);
+    }
+
+    #[test]
+    fn subtask_node_context_used_updates_independently() {
+        let mut app = make_app();
+        app.start_assistant_turn();
+        app.update_turn_stats(10, 1_000_000_000, 200, 0);
+        app.enter_subtask(1, "worker_a".into());
+        app.update_turn_stats(20, 1_000_000_000, 500, 1);
+        assert_eq!(app.tree[0].context_used, 200, "orchestrator node");
+        assert_eq!(app.tree[1].context_used, 500, "worker_a node");
+    }
+
+    #[test]
+    fn new_subtask_resets_context_bar() {
+        let mut app = make_app();
+        app.start_assistant_turn();
+        app.enter_subtask(1, "worker_a".into());
+        app.update_turn_stats(20, 1_000_000_000, 900, 1);
+        assert_eq!(app.tree[1].context_used, 900);
+        app.exit_subtask(1);
+        app.enter_subtask(1, "worker_b".into());
+        // fresh subtask — counter starts at 0
+        assert_eq!(app.tree.last().unwrap().context_used, 0);
     }
 
     #[test]

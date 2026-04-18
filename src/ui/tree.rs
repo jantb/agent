@@ -10,13 +10,36 @@ use crate::types::NodeStatus;
 
 pub(super) const TREE_PANEL_WIDTH: u16 = 44;
 
+/// Render a compact 6-cell context bar: ` [████░░] 42%`
+/// Returns a fixed-width string of exactly 13 chars.
+fn context_bar(used: u64, total: u64) -> String {
+    let pct = if total > 0 {
+        ((used as f64 / total as f64) * 100.0).round() as u64
+    } else {
+        0
+    };
+    let filled = if total > 0 {
+        ((used as f64 / total as f64) * 6.0).round() as usize
+    } else {
+        0
+    }
+    .min(6);
+    let empty = 6 - filled;
+    let bar: String = "█".repeat(filled) + &"░".repeat(empty);
+    format!(" [{bar}]{pct:3}%")
+}
+
 pub(super) fn draw_tree_panel(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let ctx_total = app.context_window_size.unwrap_or(crate::ollama::NUM_CTX);
     let mut lines: Vec<Line> = Vec::new();
 
     lines.push(Line::from(Span::styled(
         "─ Agent Tree ".to_string() + &"─".repeat(area.width.saturating_sub(14) as usize),
         Style::default().fg(Color::DarkGray),
     )));
+
+    // bar string is always 13 chars: ` [██████] NNN%`
+    const BAR_WIDTH: usize = 13;
 
     for node in &app.tree {
         let indent = " ".repeat(node.depth);
@@ -27,16 +50,28 @@ pub(super) fn draw_tree_panel(frame: &mut Frame, app: &App, area: ratatui::layou
             NodeStatus::Failed => ("✗", Color::Red),
         };
         let connector = if node.depth > 0 { "└─ " } else { "" };
-        let prefix_width = indent.len() + connector.len() + 3;
+        let prefix_width = indent.len() + connector.len() + 3; // indent + connector + glyph + space
+        let bar_str = context_bar(node.context_used, ctx_total);
+        // Available chars for label on first line (leave room for bar)
+        let first_line_label_avail = (area.width as usize)
+            .saturating_sub(prefix_width + BAR_WIDTH)
+            .max(1);
         let avail = (area.width as usize).saturating_sub(prefix_width).max(1);
         let label_chars: Vec<char> = node.label.chars().collect();
         let chunks: Vec<String> = if label_chars.is_empty() {
             vec![String::new()]
         } else {
-            label_chars
-                .chunks(avail)
-                .map(|c| c.iter().collect())
-                .collect()
+            // First chunk is constrained by bar, subsequent by full avail
+            let first: String = label_chars.iter().take(first_line_label_avail).collect();
+            let mut v = vec![first];
+            let rest: Vec<char> = label_chars
+                .into_iter()
+                .skip(first_line_label_avail)
+                .collect();
+            for ch in rest.chunks(avail) {
+                v.push(ch.iter().collect());
+            }
+            v
         };
         for (ci, chunk) in chunks.iter().enumerate() {
             if ci == 0 {
@@ -48,6 +83,7 @@ pub(super) fn draw_tree_panel(frame: &mut Frame, app: &App, area: ratatui::layou
                     Span::styled(glyph, Style::default().fg(color)),
                     Span::raw(" "),
                     Span::styled(chunk.clone(), Style::default().fg(color)),
+                    Span::styled(bar_str.clone(), Style::default().fg(Color::Indexed(240))),
                 ]));
             } else {
                 let pad = " ".repeat(prefix_width);
@@ -185,6 +221,40 @@ mod tests {
                 "Tree row {row} overflows: {trimmed_len} chars > {TREE_PANEL_WIDTH}\nrow: {tree_row:?}"
             );
         }
+    }
+
+    #[test]
+    fn tree_panel_renders_per_node_context_bar() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut app = crate::app::App::new("model".into(), std::path::PathBuf::from("."));
+        app.context_window_size = Some(1000);
+        app.start_assistant_turn();
+        app.update_turn_stats(10, 1_000_000_000, 500, 0); // 50% for orchestrator
+        app.enter_subtask(1, "w".into());
+        app.update_turn_stats(20, 1_000_000_000, 250, 1); // 25% for subtask
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::super::draw(frame, &app))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let mut found_50 = false;
+        let mut found_25 = false;
+        for row in 0..30u16 {
+            let txt = row_text(&buffer, row, 0, TREE_PANEL_WIDTH);
+            if txt.contains("50%") {
+                found_50 = true;
+            }
+            if txt.contains("25%") {
+                found_25 = true;
+            }
+        }
+        assert!(found_50, "orchestrator row should show 50% bar");
+        assert!(found_25, "subtask row should show 25% bar");
     }
 
     #[test]

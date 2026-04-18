@@ -13,6 +13,7 @@ impl App {
             depth,
             label: label.clone(),
             status: NodeStatus::Active,
+            context_used: 0,
         });
         self.messages.push(ChatMessage {
             role: Role::Assistant,

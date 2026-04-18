@@ -126,6 +126,7 @@ pub struct NodeInfo {
     pub depth: usize,
     pub label: String,
     pub status: NodeStatus,
+    pub context_used: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

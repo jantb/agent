@@ -52,7 +52,7 @@ pub fn map_key(key: KeyEvent, streaming: bool) -> UiCommand {
         (KeyCode::PageDown, _) => UiCommand::PageDown,
         (KeyCode::End, _) => UiCommand::ScrollToBottom,
         (KeyCode::Tab, _) if !streaming => UiCommand::Tab,
-        (KeyCode::BackTab, _) if !streaming => UiCommand::CycleMode,
+        (KeyCode::BackTab, _) => UiCommand::CycleMode,
         (KeyCode::Char(c), _) => UiCommand::InsertChar(c),
         _ => UiCommand::Ignore,
     }
@@ -196,10 +196,10 @@ mod tests {
     }
 
     #[test]
-    fn shift_tab_ignored_when_streaming() {
-        assert!(matches!(
+    fn shift_tab_cycles_mode_during_streaming() {
+        assert_eq!(
             map_key(key(KeyCode::BackTab, KeyModifiers::SHIFT), true),
-            UiCommand::Ignore
-        ));
+            UiCommand::CycleMode
+        );
     }
 }

@@ -165,7 +165,7 @@ edge cases, and preferences. Do not skip this even if the request seems clear â€
 Ask at least one question.\n\
 2. **Plan**: After the user answers, call `update_plan` to publish a concrete task list. \
 Then ask the user for approval or changes before proceeding.\n\
-3. **Execute**: After approval, ask the user to switch out of plan mode (they can cycle modes with Shift+Tab) to apply changes. \
+3. **Execute**: After approval, ask the user to switch to **Thorough** mode (press Shift+Tab once from Plan) if you might still need to clarify edge cases during execution, or to **Oneshot** mode (Shift+Tab twice) to execute straight through without further prompts. \
 You cannot write, edit, or delete files while in plan mode â€” the tools are disabled.\n\
 If the user answers \"[DONE]\", move to the next phase immediately.";
 
@@ -266,6 +266,14 @@ mod tests {
     fn thorough_prompt_contains_must_call() {
         assert!(THOROUGH_PROMPT_APPENDIX.contains("interview_question"));
         assert!(THOROUGH_PROMPT_APPENDIX.contains("MUST call it"));
+    }
+
+    #[test]
+    fn plan_prompt_recommends_thorough_mode_for_execution() {
+        assert!(
+            PLAN_PROMPT_APPENDIX.contains("Thorough"),
+            "plan mode should explicitly recommend Thorough as the next step when ready to execute"
+        );
     }
 
     #[test]
