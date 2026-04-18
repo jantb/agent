@@ -246,12 +246,23 @@ impl AgentTask {
             };
             debug!(tool = %call.name, is_error = result.is_error, "tool dispatch done");
 
-            self.emit(AgentEvent::ToolCompleted(result.clone())).await;
-            // For delegate_task results at the orchestrator level, store a compact
-            // summary so orchestrator context stays bounded across turns.
-            // The full result has already been emitted to the TUI above.
+            // Subtask findings flow into the orchestrator's context (truncated below)
+            // but are not dumped to the TUI — keeps the terminal readable while the
+            // orchestrator still has the full analysis to reason over.
+            let display_result = if call.name == "delegate_task" {
+                ToolResult {
+                    output: format!(
+                        "[subtask done: {} chars passed to orchestrator context]",
+                        result.output.chars().count()
+                    ),
+                    ..result.clone()
+                }
+            } else {
+                result.clone()
+            };
+            self.emit(AgentEvent::ToolCompleted(display_result)).await;
             let stored_content = if call.name == "delegate_task" && self.depth == 0 {
-                truncate_subtask_result(result.output.clone(), 2000)
+                truncate_subtask_result(result.output.clone(), 6000)
             } else {
                 result.output.clone()
             };
