@@ -10,8 +10,8 @@ use crate::{
     session::{Session, SessionMessage},
     tools::execute_built_in,
     types::{
-        AgentEvent, AgentMode, CavemanLevel, OneshotTx, Role, ToolCall, ToolDefinition, ToolResult,
-        ToolSource, TurnOutcome,
+        AgentEvent, AgentMode, OneshotTx, Role, ToolCall, ToolDefinition, ToolResult, ToolSource,
+        TurnOutcome,
     },
 };
 
@@ -45,9 +45,8 @@ pub fn system_prompt_for_depth(
     memory_index: &str,
     mcp_tools_context: &str,
     flat: bool,
-    caveman: CavemanLevel,
 ) -> String {
-    let mut prompt = if flat {
+    if flat {
         flat_system_prompt(working_dir, memory_index, mcp_tools_context)
     } else {
         match depth {
@@ -55,12 +54,7 @@ pub fn system_prompt_for_depth(
             1 => coordinator_system_prompt(working_dir, mcp_tools_context),
             _ => worker_system_prompt(working_dir, mcp_tools_context),
         }
-    };
-    if caveman.is_active() {
-        prompt = compress_prompt(&prompt, caveman);
-        prompt.push_str(caveman_appendix(caveman));
     }
-    prompt
 }
 
 fn flat_system_prompt(
@@ -71,9 +65,9 @@ fn flat_system_prompt(
     let dir = working_dir.display();
     let mut prompt = format!(
         "\
-You are a coding AI agent. Working directory: {dir}
-You help users write, edit, debug, and understand code. Prefer idiomatic, compact solutions.
-You have full tool access. Complete everything yourself — no delegation needed.
+You are a coding AI agent working on the project in: {dir}
+You help users write, edit, debug, and understand code in that project. When the user says 'this' or 'the project', they mean the codebase in your working directory — not you.
+Prefer idiomatic, compact solutions. You have full tool access. Complete everything yourself — no delegation needed.
 
 ## Rules
 1. Use read_file, write_file, edit_file, search_files, glob_files, list_dir as needed.
@@ -103,8 +97,9 @@ fn orchestrator_system_prompt(
     let dir = working_dir.display();
     let mut prompt = format!(
         "\
-You are the orchestration layer of a coding AI agent. Working directory: {dir}
-You help users write, edit, debug, and understand code. Prefer idiomatic, compact solutions.
+You are the orchestration layer of a coding AI agent working on the project in: {dir}
+You help users write, edit, debug, and understand code in that project. When the user says 'this' or 'the project', they mean the codebase in your working directory — not you.
+Prefer idiomatic, compact solutions.
 Your ONLY tool is `delegate_task`. You MUST call it for EVERY request — no exceptions.
 You do NOT have bash, shell, or command execution access. Use only the provided tools.
 
@@ -137,7 +132,8 @@ fn coordinator_system_prompt(working_dir: &std::path::Path, mcp_tools_context: &
     let dir = working_dir.display();
     let mut prompt = format!(
         "\
-You are the coordination layer of a coding AI agent. Working directory: {dir}
+You are the coordination layer of a coding AI agent working on the project in: {dir}
+When the user says 'this' or 'the project', they mean the codebase in your working directory — not you.
 Tools: glob_files, search_files, list_dir, delegate_task.
 You do NOT have bash, shell, or command execution access. Use only the provided tools.
 
@@ -159,7 +155,8 @@ fn worker_system_prompt(working_dir: &std::path::Path, mcp_tools_context: &str) 
     let dir = working_dir.display();
     let mut prompt = format!(
         "\
-You are the execution layer of a coding AI agent. Working directory: {dir}
+You are the execution layer of a coding AI agent working on the project in: {dir}
+When the user says 'this' or 'the project', they mean the codebase in your working directory — not you.
 You have full file-tool access. No delegation — complete everything yourself.
 Write idiomatic, compact code. Fix root causes, not symptoms.
 You do NOT have bash, shell, or command execution access. Use only the provided tools.
@@ -196,132 +193,6 @@ You have the `interview_question` tool. You MUST call it at least once before do
 ask about any ambiguity, unclear requirements, or choices with significant implementation impact. \
 Do not default to assumptions when you could ask. Prefer asking over guessing. \
 If the user answers \"[DONE]\", stop asking and proceed.";
-
-fn caveman_appendix(level: CavemanLevel) -> &'static str {
-    match level {
-        CavemanLevel::Off => "",
-        CavemanLevel::Lite => {
-            "\n\n## Output style: concise\n\
-Remove filler words, pleasantries, and hedging. Keep grammar intact. \
-No \"just\", \"really\", \"basically\", \"I think\". \
-Be direct. Code unchanged."
-        }
-        CavemanLevel::Full => {
-            "\n\n## Output style: caveman\n\
-Terse. Fragments OK. Drop articles (the/a/an), filler, pleasantries, hedging. \
-Short synonyms. Code/URLs/commands unchanged. \
-Pattern: [thing] [action] [reason]. [next step]."
-        }
-        CavemanLevel::Ultra => {
-            "\n\n## Output style: ultra-terse\n\
-Max compress. Telegraphic. No articles/filler/hedge. \
-Abbrev when unambiguous. Code unchanged. \
-Pattern: [thing] [verb] [why]. [next]."
-        }
-    }
-}
-
-/// Compress a system prompt by removing filler based on caveman level.
-fn compress_prompt(prompt: &str, level: CavemanLevel) -> String {
-    match level {
-        CavemanLevel::Off => prompt.to_string(),
-        CavemanLevel::Lite => {
-            // Collapse multiple blank lines into a single blank line
-            let mut result = String::with_capacity(prompt.len());
-            let mut prev_blank = false;
-            for line in prompt.lines() {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    if !prev_blank {
-                        result.push('\n');
-                        prev_blank = true;
-                    }
-                } else {
-                    prev_blank = false;
-                    result.push_str(line);
-                    result.push('\n');
-                }
-            }
-            result
-        }
-        CavemanLevel::Full => {
-            // Strip articles + filler words, collapse whitespace
-            let mut result = String::with_capacity(prompt.len());
-            let mut prev_blank = false;
-            for line in prompt.lines() {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    if !prev_blank {
-                        result.push('\n');
-                        prev_blank = true;
-                    }
-                    continue;
-                }
-                if prev_blank {
-                    result.push('\n');
-                }
-                prev_blank = false;
-                let stripped = strip_filler_words(line);
-                result.push_str(&stripped);
-                result.push('\n');
-            }
-            result
-        }
-        CavemanLevel::Ultra => {
-            // Aggressive: strip articles + filler + compress sentences
-            let mut result = String::with_capacity(prompt.len());
-            for line in prompt.lines() {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                let stripped = strip_filler_words(trimmed);
-                if !stripped.trim().is_empty() {
-                    result.push_str(stripped.trim());
-                    result.push('\n');
-                }
-            }
-            result
-        }
-    }
-}
-
-fn strip_filler_words(line: &str) -> String {
-    let mut result = String::with_capacity(line.len());
-    // Preserve leading whitespace
-    let leading: String = line.chars().take_while(|c| c.is_whitespace()).collect();
-    result.push_str(&leading);
-    let content = &line[leading.len()..];
-    let mut first = true;
-    for word in content.split_whitespace() {
-        let lower = word.to_lowercase();
-        // Strip pure filler; keep articles at sentence start for readability
-        let is_filler = matches!(
-            lower.trim_matches(|c: char| !c.is_alphanumeric()),
-            "the"
-                | "a"
-                | "an"
-                | "just"
-                | "really"
-                | "basically"
-                | "simply"
-                | "actually"
-                | "very"
-                | "quite"
-                | "perhaps"
-                | "please"
-        );
-        if is_filler {
-            continue;
-        }
-        if !first {
-            result.push(' ');
-        }
-        first = false;
-        result.push_str(word);
-    }
-    result
-}
 
 /// Filter the full tool set to the subset appropriate for a given depth.
 /// When `flat` is true, all depths get worker tools (no delegate_task).
@@ -442,7 +313,6 @@ pub enum UserAction {
     ClearHistory,
     ChangeModel(String),
     ToggleFlat(bool),
-    SetCaveman(CavemanLevel),
 }
 
 enum TurnPhaseResult {
@@ -464,11 +334,12 @@ pub struct AgentTask {
     event_tx: mpsc::Sender<AgentEvent>,
     /// None for subtasks (no interactive cancel).
     action_rx: Option<mpsc::Receiver<UserAction>>,
+    /// Actions received mid-turn that weren't Cancel/Quit — processed after the turn ends.
+    pending_actions: std::collections::VecDeque<UserAction>,
     session: Session,
     system_prompt: String,
     depth: usize,
     flat: bool,
-    caveman: CavemanLevel,
     mode: AgentMode,
     mcp_tools_context: String,
 }
@@ -486,7 +357,6 @@ pub struct AgentTaskConfig {
     pub system_prompt: String,
     /// Single-level mode: no delegation hierarchy.
     pub flat: bool,
-    pub caveman: CavemanLevel,
     /// Agent mode: controls which tools are available and how the agent behaves.
     pub mode: AgentMode,
     pub mcp_tools_context: String,
@@ -508,10 +378,6 @@ impl AgentTask {
             AgentMode::Thorough => system_prompt.push_str(THOROUGH_PROMPT_APPENDIX),
             AgentMode::Oneshot => {}
         }
-        if cfg.caveman.is_active() {
-            system_prompt = compress_prompt(&system_prompt, cfg.caveman);
-            system_prompt.push_str(caveman_appendix(cfg.caveman));
-        }
         Self {
             ollama: cfg.ollama,
             mcp: cfg.mcp,
@@ -520,11 +386,11 @@ impl AgentTask {
             all_tools: cfg.all_tools,
             event_tx: cfg.event_tx,
             action_rx: Some(cfg.action_rx),
+            pending_actions: std::collections::VecDeque::new(),
             session: cfg.session,
             system_prompt,
             depth: 0,
             flat: cfg.flat,
-            caveman: cfg.caveman,
             mode: cfg.mode,
             mcp_tools_context: cfg.mcp_tools_context,
         }
@@ -593,6 +459,23 @@ impl AgentTask {
         }
     }
 
+    fn refresh_tools_and_prompt(&mut self) {
+        self.tools = tools_for_depth(&self.all_tools, self.depth, self.flat, self.mode);
+        let idx = memory::build_memory_index(&self.working_dir);
+        self.system_prompt = system_prompt_for_depth(
+            self.depth,
+            &self.working_dir,
+            &idx,
+            &self.mcp_tools_context,
+            self.flat,
+        );
+        match self.mode {
+            AgentMode::Plan => self.system_prompt.push_str(PLAN_PROMPT_APPENDIX),
+            AgentMode::Thorough => self.system_prompt.push_str(THOROUGH_PROMPT_APPENDIX),
+            AgentMode::Oneshot => {}
+        }
+    }
+
     async fn save_or_emit_error(&mut self) {
         if self.depth > 0 {
             return; // subtasks don't persist their isolated sessions
@@ -605,25 +488,8 @@ impl AgentTask {
 
     async fn execute_turn(&mut self) -> TurnPhaseResult {
         let history = self.history();
-        if let Some(rx) = &mut self.action_rx {
-            tokio::select! {
-                action = rx.recv() => {
-                    match action {
-                        Some(UserAction::Cancel) | None => TurnPhaseResult::Cancelled,
-                        Some(UserAction::Quit) => TurnPhaseResult::Quit,
-                        _ => TurnPhaseResult::Cancelled,
-                    }
-                }
-                outcome = self.ollama.stream_turn(&history, &self.tools, self.event_tx.clone()) => {
-                    match outcome {
-                        Err(e) => TurnPhaseResult::Error(e),
-                        Ok(TurnOutcome::Text(content)) => TurnPhaseResult::Text(content),
-                        Ok(TurnOutcome::ToolCalls(text, calls)) => TurnPhaseResult::ToolCalls(text, calls),
-                    }
-                }
-            }
-        } else {
-            match self
+        let Some(mut rx) = self.action_rx.take() else {
+            return match self
                 .ollama
                 .stream_turn(&history, &self.tools, self.event_tx.clone())
                 .await
@@ -631,8 +497,38 @@ impl AgentTask {
                 Err(e) => TurnPhaseResult::Error(e),
                 Ok(TurnOutcome::Text(content)) => TurnPhaseResult::Text(content),
                 Ok(TurnOutcome::ToolCalls(text, calls)) => TurnPhaseResult::ToolCalls(text, calls),
+            };
+        };
+        let mut deferred: Vec<UserAction> = Vec::new();
+        let result = {
+            let outcome_fut = self
+                .ollama
+                .stream_turn(&history, &self.tools, self.event_tx.clone());
+            tokio::pin!(outcome_fut);
+            loop {
+                tokio::select! {
+                    action = rx.recv() => {
+                        match action {
+                            Some(UserAction::Cancel) | None => break TurnPhaseResult::Cancelled,
+                            Some(UserAction::Quit) => break TurnPhaseResult::Quit,
+                            Some(other) => deferred.push(other),
+                        }
+                    }
+                    outcome = &mut outcome_fut => {
+                        break match outcome {
+                            Err(e) => TurnPhaseResult::Error(e),
+                            Ok(TurnOutcome::Text(content)) => TurnPhaseResult::Text(content),
+                            Ok(TurnOutcome::ToolCalls(text, calls)) => TurnPhaseResult::ToolCalls(text, calls),
+                        };
+                    }
+                }
             }
+        };
+        self.action_rx = Some(rx);
+        for action in deferred {
+            self.pending_actions.push_back(action);
         }
+        result
     }
 
     async fn handle_text_turn(&mut self, content: String) {
@@ -733,15 +629,7 @@ impl AgentTask {
                 images: result.images.clone(),
             });
             if matches!(call.name.as_str(), "remember" | "forget") {
-                let idx = memory::build_memory_index(&self.working_dir);
-                self.system_prompt = system_prompt_for_depth(
-                    self.depth,
-                    &self.working_dir,
-                    &idx,
-                    &self.mcp_tools_context,
-                    self.flat,
-                    self.caveman,
-                );
+                self.refresh_tools_and_prompt();
             }
         }
         self.save_or_emit_error().await;
@@ -772,7 +660,6 @@ impl AgentTask {
             "",
             &self.mcp_tools_context,
             self.flat,
-            self.caveman,
         );
         if let Some(extra) = custom_system {
             child_system.push_str("\n\n## Instructions from orchestrator\n");
@@ -793,11 +680,11 @@ impl AgentTask {
             all_tools: self.all_tools.clone(),
             event_tx: self.event_tx.clone(),
             action_rx: None,
+            pending_actions: std::collections::VecDeque::new(),
             session: child_session,
             system_prompt: child_system,
             depth: child_depth,
             flat: self.flat,
-            caveman: self.caveman,
             mode: AgentMode::Oneshot,
             mcp_tools_context: self.mcp_tools_context.clone(),
         };
@@ -904,13 +791,17 @@ impl AgentTask {
 
     pub async fn run(mut self) {
         loop {
-            let rx = self
-                .action_rx
-                .as_mut()
-                .expect("root AgentTask must have action_rx");
-            let action = match rx.recv().await {
-                Some(a) => a,
-                None => return,
+            let action = if let Some(a) = self.pending_actions.pop_front() {
+                a
+            } else {
+                let rx = self
+                    .action_rx
+                    .as_mut()
+                    .expect("root AgentTask must have action_rx");
+                match rx.recv().await {
+                    Some(a) => a,
+                    None => return,
+                }
             };
 
             match action {
@@ -925,104 +816,19 @@ impl AgentTask {
                 }
                 UserAction::ChangeModel(model) => {
                     self.flat = is_flat_model(&model);
-                    self.tools = tools_for_depth(&self.all_tools, self.depth, self.flat, self.mode);
-                    let idx = memory::build_memory_index(&self.working_dir);
-                    self.system_prompt = system_prompt_for_depth(
-                        self.depth,
-                        &self.working_dir,
-                        &idx,
-                        &self.mcp_tools_context,
-                        self.flat,
-                        self.caveman,
-                    );
-                    match self.mode {
-                        AgentMode::Plan => self.system_prompt.push_str(PLAN_PROMPT_APPENDIX),
-                        AgentMode::Thorough => {
-                            self.system_prompt.push_str(THOROUGH_PROMPT_APPENDIX)
-                        }
-                        AgentMode::Oneshot => {}
-                    }
-                    if self.caveman.is_active() {
-                        self.system_prompt = compress_prompt(&self.system_prompt, self.caveman);
-                        self.system_prompt.push_str(caveman_appendix(self.caveman));
-                    }
+                    self.refresh_tools_and_prompt();
                     self.ollama.set_model(model);
                     self.emit(AgentEvent::TurnDone).await;
                 }
                 UserAction::ToggleFlat(new_flat) => {
                     self.flat = new_flat;
-                    self.tools = tools_for_depth(&self.all_tools, self.depth, self.flat, self.mode);
-                    let idx = memory::build_memory_index(&self.working_dir);
-                    self.system_prompt = system_prompt_for_depth(
-                        self.depth,
-                        &self.working_dir,
-                        &idx,
-                        &self.mcp_tools_context,
-                        self.flat,
-                        self.caveman,
-                    );
-                    match self.mode {
-                        AgentMode::Plan => self.system_prompt.push_str(PLAN_PROMPT_APPENDIX),
-                        AgentMode::Thorough => {
-                            self.system_prompt.push_str(THOROUGH_PROMPT_APPENDIX)
-                        }
-                        AgentMode::Oneshot => {}
-                    }
-                    if self.caveman.is_active() {
-                        self.system_prompt = compress_prompt(&self.system_prompt, self.caveman);
-                        self.system_prompt.push_str(caveman_appendix(self.caveman));
-                    }
-                    self.emit(AgentEvent::TurnDone).await;
-                }
-                UserAction::SetCaveman(level) => {
-                    self.caveman = level;
-                    let idx = memory::build_memory_index(&self.working_dir);
-                    self.system_prompt = system_prompt_for_depth(
-                        self.depth,
-                        &self.working_dir,
-                        &idx,
-                        &self.mcp_tools_context,
-                        self.flat,
-                        self.caveman,
-                    );
-                    match self.mode {
-                        AgentMode::Plan => self.system_prompt.push_str(PLAN_PROMPT_APPENDIX),
-                        AgentMode::Thorough => {
-                            self.system_prompt.push_str(THOROUGH_PROMPT_APPENDIX)
-                        }
-                        AgentMode::Oneshot => {}
-                    }
-                    if self.caveman.is_active() {
-                        self.system_prompt = compress_prompt(&self.system_prompt, self.caveman);
-                        self.system_prompt.push_str(caveman_appendix(self.caveman));
-                    }
+                    self.refresh_tools_and_prompt();
                     self.emit(AgentEvent::TurnDone).await;
                 }
                 UserAction::SendMessage { text, images, mode } => {
                     if mode != self.mode {
                         self.mode = mode;
-                        self.tools =
-                            tools_for_depth(&self.all_tools, self.depth, self.flat, self.mode);
-                        let idx = memory::build_memory_index(&self.working_dir);
-                        self.system_prompt = system_prompt_for_depth(
-                            self.depth,
-                            &self.working_dir,
-                            &idx,
-                            &self.mcp_tools_context,
-                            self.flat,
-                            self.caveman,
-                        );
-                        match self.mode {
-                            AgentMode::Plan => self.system_prompt.push_str(PLAN_PROMPT_APPENDIX),
-                            AgentMode::Thorough => {
-                                self.system_prompt.push_str(THOROUGH_PROMPT_APPENDIX)
-                            }
-                            AgentMode::Oneshot => {}
-                        }
-                        if self.caveman.is_active() {
-                            self.system_prompt = compress_prompt(&self.system_prompt, self.caveman);
-                            self.system_prompt.push_str(caveman_appendix(self.caveman));
-                        }
+                        self.refresh_tools_and_prompt();
                     }
                     self.session.append_message(SessionMessage::Text {
                         role: Role::User,
@@ -1216,7 +1022,7 @@ mod tests {
     #[test]
     fn test_orchestrator_system_prompt_empty_memory() {
         let dir = std::path::Path::new("/tmp/test");
-        let prompt = system_prompt_for_depth(0, dir, "", "", false, CavemanLevel::Off);
+        let prompt = system_prompt_for_depth(0, dir, "", "", false);
         assert!(prompt.contains("orchestration layer"));
         assert!(prompt.contains("/tmp/test"));
         assert!(!prompt.contains("Stored memories"));
@@ -1225,8 +1031,7 @@ mod tests {
     #[test]
     fn test_orchestrator_system_prompt_with_memory() {
         let dir = std::path::Path::new("/tmp/test");
-        let prompt =
-            system_prompt_for_depth(0, dir, "Memory 1: hello", "", false, CavemanLevel::Off);
+        let prompt = system_prompt_for_depth(0, dir, "Memory 1: hello", "", false);
         assert!(prompt.contains("Stored memories"));
         assert!(prompt.contains("Memory 1: hello"));
     }
@@ -1234,7 +1039,7 @@ mod tests {
     #[test]
     fn test_coordinator_system_prompt() {
         let dir = std::path::Path::new("/tmp/test");
-        let prompt = system_prompt_for_depth(1, dir, "", "", false, CavemanLevel::Off);
+        let prompt = system_prompt_for_depth(1, dir, "", "", false);
         assert!(prompt.contains("coordination layer"));
         assert!(prompt.contains("/tmp/test"));
     }
@@ -1242,7 +1047,7 @@ mod tests {
     #[test]
     fn test_worker_system_prompt() {
         let dir = std::path::Path::new("/tmp/test");
-        let prompt = system_prompt_for_depth(2, dir, "", "", false, CavemanLevel::Off);
+        let prompt = system_prompt_for_depth(2, dir, "", "", false);
         assert!(prompt.contains("execution layer"));
         assert!(prompt.contains("/tmp/test"));
     }
@@ -1341,7 +1146,7 @@ mod tests {
     #[test]
     fn flat_mode_prompt_has_no_delegation() {
         let dir = std::path::Path::new("/tmp/test");
-        let prompt = system_prompt_for_depth(0, dir, "", "", true, CavemanLevel::Off);
+        let prompt = system_prompt_for_depth(0, dir, "", "", true);
         assert!(!prompt.contains("delegate_task"));
         assert!(prompt.contains("coding AI agent"));
     }
@@ -1436,173 +1241,6 @@ mod tests {
     }
 
     #[test]
-    fn compress_prompt_off_is_identity() {
-        let input = "You are a coding AI agent.\nYou help the users.";
-        assert_eq!(compress_prompt(input, CavemanLevel::Off), input);
-    }
-
-    #[test]
-    fn compress_prompt_lite_collapses_blank_lines() {
-        let input = "Line one.\n\n\n\nLine two.\n\n\nLine three.";
-        let result = compress_prompt(input, CavemanLevel::Lite);
-        // Should collapse multiple blank lines into one
-        assert!(!result.contains("\n\n\n"));
-        assert!(result.contains("Line one."));
-        assert!(result.contains("Line two."));
-        assert!(result.contains("Line three."));
-    }
-
-    #[test]
-    fn compress_prompt_full_strips_articles() {
-        let input = "Return the result of a computation.";
-        let result = compress_prompt(input, CavemanLevel::Full);
-        assert!(!result.contains(" the "));
-        assert!(!result.contains(" a "));
-        assert!(result.contains("result"));
-        assert!(result.contains("computation"));
-    }
-
-    #[test]
-    fn compress_prompt_full_strips_filler_words() {
-        let input = "You should just basically really try to simply do it.";
-        let result = compress_prompt(input, CavemanLevel::Full);
-        assert!(!result.contains("just"));
-        assert!(!result.contains("basically"));
-        assert!(!result.contains("really"));
-        assert!(!result.contains("simply"));
-        assert!(result.contains("try"));
-        assert!(result.contains("do"));
-    }
-
-    #[test]
-    fn compress_prompt_ultra_removes_blank_lines() {
-        let input = "Line one.\n\n\nLine two.\n\n";
-        let result = compress_prompt(input, CavemanLevel::Ultra);
-        assert!(!result.contains("\n\n"));
-        assert!(result.contains("Line one."));
-        assert!(result.contains("Line two."));
-    }
-
-    #[test]
-    fn compress_prompt_preserves_code_tokens() {
-        // Code-like content should survive compression
-        let input = "Use `read_file` and `write_file` as needed.";
-        let result = compress_prompt(input, CavemanLevel::Full);
-        assert!(result.contains("`read_file`"));
-        assert!(result.contains("`write_file`"));
-    }
-
-    #[test]
-    fn caveman_appendix_off_is_empty() {
-        assert!(caveman_appendix(CavemanLevel::Off).is_empty());
-    }
-
-    #[test]
-    fn caveman_appendix_levels_non_empty() {
-        assert!(!caveman_appendix(CavemanLevel::Lite).is_empty());
-        assert!(!caveman_appendix(CavemanLevel::Full).is_empty());
-        assert!(!caveman_appendix(CavemanLevel::Ultra).is_empty());
-    }
-
-    #[test]
-    fn caveman_appendix_increasing_terseness() {
-        // Each level should be shorter or equal to the previous
-        let lite = caveman_appendix(CavemanLevel::Lite);
-        let full = caveman_appendix(CavemanLevel::Full);
-        let ultra = caveman_appendix(CavemanLevel::Ultra);
-        // All should mention code being unchanged
-        assert!(lite.contains("Code unchanged") || lite.contains("code unchanged"));
-        assert!(full.contains("Code") || full.contains("code"));
-        assert!(ultra.contains("Code") || ultra.contains("code"));
-    }
-
-    #[test]
-    fn compress_prompt_full_reduces_length() {
-        let input = "You are a coding AI agent. You help the users write, edit, debug, and understand code. \
-            Prefer idiomatic, compact solutions. You have the full tool access. Just basically complete \
-            everything yourself — no delegation needed.";
-        let original_len = input.len();
-        let compressed = compress_prompt(input, CavemanLevel::Full);
-        assert!(
-            compressed.len() < original_len,
-            "Full compression should reduce token count"
-        );
-    }
-
-    #[test]
-    fn system_prompt_caveman_off_unchanged() {
-        let dir = std::path::Path::new("/tmp/test");
-        let without = system_prompt_for_depth(0, dir, "", "", true, CavemanLevel::Off);
-        assert!(without.contains("You are a coding AI agent"));
-        assert!(!without.contains("Output style"));
-    }
-
-    #[test]
-    fn system_prompt_caveman_lite_adds_appendix() {
-        let dir = std::path::Path::new("/tmp/test");
-        let prompt = system_prompt_for_depth(0, dir, "", "", true, CavemanLevel::Lite);
-        assert!(prompt.contains("Output style: concise"));
-        assert!(prompt.contains("Code unchanged"));
-    }
-
-    #[test]
-    fn system_prompt_caveman_full_strips_and_appends() {
-        let dir = std::path::Path::new("/tmp/test");
-        let off = system_prompt_for_depth(0, dir, "", "", true, CavemanLevel::Off);
-        let full = system_prompt_for_depth(0, dir, "", "", true, CavemanLevel::Full);
-        assert!(full.contains("Output style: caveman"));
-        assert!(
-            full.len() < off.len() + 200,
-            "Full prompt should not be much longer than off after compression removes filler"
-        );
-        let base_portion = full.split("## Output style").next().unwrap();
-        assert!(
-            !base_portion
-                .split_whitespace()
-                .any(|w| w == "the" || w == "a" || w == "an"),
-            "Articles should be stripped from base prompt in Full mode"
-        );
-    }
-
-    #[test]
-    fn system_prompt_caveman_ultra_most_compressed() {
-        let dir = std::path::Path::new("/tmp/test");
-        let off = system_prompt_for_depth(0, dir, "", "", true, CavemanLevel::Off);
-        let ultra = system_prompt_for_depth(0, dir, "", "", true, CavemanLevel::Ultra);
-        assert!(ultra.contains("Output style: ultra-terse"));
-        let off_base = off.split("## Output style").next().unwrap_or(&off);
-        let ultra_base = ultra.split("## Output style").next().unwrap_or(&ultra);
-        assert!(
-            ultra_base.len() < off_base.len(),
-            "Ultra base prompt ({}) should be shorter than Off base ({})",
-            ultra_base.len(),
-            off_base.len()
-        );
-    }
-
-    #[test]
-    fn system_prompt_caveman_preserves_code_references() {
-        let dir = std::path::Path::new("/tmp/test");
-        let prompt = system_prompt_for_depth(0, dir, "", "", true, CavemanLevel::Ultra);
-        assert!(prompt.contains("read_file"));
-        assert!(prompt.contains("write_file"));
-        assert!(prompt.contains("edit_file"));
-    }
-
-    #[test]
-    fn system_prompt_caveman_levels_produce_different_prompts() {
-        let dir = std::path::Path::new("/tmp/test");
-        let off = system_prompt_for_depth(0, dir, "", "", true, CavemanLevel::Off);
-        let lite = system_prompt_for_depth(0, dir, "", "", true, CavemanLevel::Lite);
-        let full = system_prompt_for_depth(0, dir, "", "", true, CavemanLevel::Full);
-        let ultra = system_prompt_for_depth(0, dir, "", "", true, CavemanLevel::Ultra);
-        assert_ne!(off, lite, "Off and Lite should differ");
-        assert_ne!(lite, full, "Lite and Full should differ");
-        assert_ne!(full, ultra, "Full and Ultra should differ");
-        assert_ne!(off, ultra, "Off and Ultra should differ");
-    }
-
-    #[test]
     fn mcp_tools_prompt_section_with_tools() {
         let tools = vec![
             ToolDefinition {
@@ -1635,7 +1273,7 @@ mod tests {
     fn system_prompt_includes_mcp_tools_context() {
         let dir = std::path::Path::new("/tmp/test");
         let ctx = "## MCP tools\n- `gradle_build`: Run gradle build\n";
-        let prompt = system_prompt_for_depth(0, dir, "", ctx, true, CavemanLevel::Off);
+        let prompt = system_prompt_for_depth(0, dir, "", ctx, true);
         assert!(prompt.contains("## MCP tools"));
         assert!(prompt.contains("`gradle_build`"));
     }
@@ -1643,7 +1281,7 @@ mod tests {
     #[test]
     fn system_prompt_omits_empty_mcp_context() {
         let dir = std::path::Path::new("/tmp/test");
-        let prompt = system_prompt_for_depth(0, dir, "", "", true, CavemanLevel::Off);
+        let prompt = system_prompt_for_depth(0, dir, "", "", true);
         assert!(!prompt.contains("## MCP tools"));
     }
 }

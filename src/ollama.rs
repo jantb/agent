@@ -33,8 +33,7 @@ impl LineParser {
             Some(pos) => pos,
             None => return vec![],
         };
-        let complete = self.buf[..=last_newline].to_vec();
-        self.buf = self.buf[last_newline + 1..].to_vec();
+        let complete: Vec<u8> = self.buf.drain(..=last_newline).collect();
         complete
             .split(|&b| b == b'\n')
             .filter(|l| !l.iter().all(|b| b.is_ascii_whitespace()))

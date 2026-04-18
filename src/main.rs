@@ -26,13 +26,13 @@ use agent::ollama::OllamaClient;
 use agent::script::{self, ScriptCommand, StepReport, StepStatus, TestReport};
 use agent::session::{ensure_gitignore, Session};
 use agent::tools::built_in_tool_definitions;
-use agent::types::{AgentEvent, AgentMode, CavemanLevel, ChatMessage, MessageKind, ToolSource};
+use agent::types::{AgentEvent, AgentMode, ChatMessage, MessageKind, ToolSource};
 use agent::ui;
 
 #[derive(Parser)]
 #[command(name = "agent", about = "Local AI agent TUI powered by Ollama")]
 struct Cli {
-    #[arg(long, default_value = "gemma4:26b", hide = true)]
+    #[arg(long, default_value = "qwen3.6:35b-a3b-coding-nvfp4", hide = true)]
     model: String,
     #[arg(long, default_value = "http://localhost:11434")]
     ollama_url: String,
@@ -122,14 +122,8 @@ async fn main() -> anyhow::Result<()> {
         .cloned()
         .collect();
     let mcp_tools_context = mcp_tools_prompt_section(&mcp_only);
-    let sys_prompt = system_prompt_for_depth(
-        0,
-        &working_dir,
-        &memory_index,
-        &mcp_tools_context,
-        flat,
-        CavemanLevel::Off,
-    );
+    let sys_prompt =
+        system_prompt_for_depth(0, &working_dir, &memory_index, &mcp_tools_context, flat);
     let (session, resumed) = match Session::load(&working_dir)? {
         Some(s) => {
             let date = s.updated_at.format("%Y-%m-%d %H:%M").to_string();
@@ -168,7 +162,6 @@ async fn main() -> anyhow::Result<()> {
         session,
         system_prompt: sys_prompt,
         flat,
-        caveman: CavemanLevel::Off,
         mode: AgentMode::default(),
         mcp_tools_context,
     });
@@ -181,7 +174,6 @@ async fn main() -> anyhow::Result<()> {
             let mut report = TestReport::new(&cli.model);
             let mut mode = AgentMode::default();
             let mut flat = is_flat_model(&cli.model);
-            let mut caveman = CavemanLevel::Off;
 
             for cmd in &commands {
                 match cmd {
@@ -205,18 +197,6 @@ async fn main() -> anyhow::Result<()> {
                             }
                             continue;
                         }
-                        if text.trim() == "/caveman" {
-                            caveman = caveman.cycle();
-                            println!("[caveman] {}", caveman.label());
-                            action_tx.send(UserAction::SetCaveman(caveman)).await.ok();
-                            loop {
-                                match event_rx.recv().await {
-                                    Some(AgentEvent::TurnDone) | None => break,
-                                    _ => {}
-                                }
-                            }
-                            continue;
-                        }
                         if text.trim() == "/clear" || text.trim() == "/new" {
                             println!("[clear]");
                             action_tx.send(UserAction::ClearHistory).await.ok();
@@ -228,16 +208,8 @@ async fn main() -> anyhow::Result<()> {
                             }
                             continue;
                         }
-                        let send_text = if text.chars().count() > 2000 {
-                            match save_context_file(&working_dir, text) {
-                                Some(ref_text) => ref_text,
-                                None => text.clone(),
-                            }
-                        } else {
-                            text.clone()
-                        };
                         let action = UserAction::SendMessage {
-                            text: send_text,
+                            text: text.clone(),
                             images: vec![],
                             mode,
                         };
@@ -557,11 +529,12 @@ async fn main() -> anyhow::Result<()> {
                 handle_terminal_event(maybe_event, &mut app, &action_tx).await;
             }
             agent_event = event_rx.recv() => {
+                let was_streaming = app.streaming;
                 if !handle_agent_event(agent_event, &mut app, &action_tx, &mut current_depth).await {
                     break;
                 }
-                // Notify script task when turn ends
-                if !app.streaming {
+                // Notify script task only on the streaming → idle transition.
+                if was_streaming && !app.streaming {
                     script_turn_done_writer.notify_one();
                 }
             }
@@ -885,26 +858,8 @@ async fn handle_slash_or_send(text: String, app: &mut App, action_tx: &mpsc::Sen
         if let Err(e) = action_tx.send(UserAction::ToggleFlat(app.flat)).await {
             tracing::error!("failed to send ToggleFlat action: {e}");
         }
-    } else if text.trim() == "/caveman" {
-        app.caveman = app.caveman.cycle();
-        app.messages.push(ChatMessage {
-            role: agent::types::Role::Assistant,
-            content: format!("Caveman: {}", app.caveman.label()),
-            kind: MessageKind::Text,
-        });
-        if let Err(e) = action_tx.send(UserAction::SetCaveman(app.caveman)).await {
-            tracing::error!("failed to send SetCaveman action: {e}");
-        }
     } else {
         let images = app.take_pending_images();
-        let text = if text.chars().count() > 2000 {
-            match save_context_file(&app.working_dir, &text) {
-                Some(ref_text) => ref_text,
-                None => text,
-            }
-        } else {
-            text
-        };
         app.add_user_message(text.clone());
         app.start_assistant_turn();
         if let Err(e) = action_tx
@@ -918,27 +873,6 @@ async fn handle_slash_or_send(text: String, app: &mut App, action_tx: &mpsc::Sen
             tracing::error!("failed to send SendMessage action: {e}");
         }
     }
-}
-
-/// Save long text to a context file and return a reference message.
-/// Returns None if writing fails.
-fn save_context_file(working_dir: &std::path::Path, text: &str) -> Option<String> {
-    let ctx_dir = working_dir.join(".agent").join("context");
-    std::fs::create_dir_all(&ctx_dir).ok()?;
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let filename = format!("ctx-{ts}.txt");
-    let path = ctx_dir.join(&filename);
-    std::fs::write(&path, text).ok()?;
-    let lines = text.lines().count();
-    let chars = text.chars().count();
-    let rel_path = format!(".agent/context/{filename}");
-    Some(format!(
-        "[Long text saved to {rel_path} — {chars} chars, {lines} lines]\n\n\
-         Read the file at `{rel_path}` to see the full content, then respond to the user's request."
-    ))
 }
 
 async fn handle_agent_event(

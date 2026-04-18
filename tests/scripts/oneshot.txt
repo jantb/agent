@@ -1,6 +1,9 @@
-# Oneshot mode test (default)
-# Verifies that in default mode, the agent executes without asking clarifying questions.
+# Oneshot mode test
+# Verifies that in Oneshot mode, the agent executes without asking clarifying questions.
+# Default mode is Plan; cycle twice (Plan -> Thorough -> Oneshot).
 
+/mode
+/mode
 Write "hello" to oneshot_test.txt
 @wait 60
 @expect_file oneshot_test.txt hello

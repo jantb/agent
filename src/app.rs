@@ -5,8 +5,7 @@ use std::time::Instant;
 use crate::autocomplete::Autocomplete;
 use crate::input::InputState;
 use crate::types::{
-    AgentMode, CavemanLevel, ChatMessage, MessageKind, NodeInfo, NodeStatus, Role, ToolCall,
-    ToolResult,
+    AgentMode, ChatMessage, MessageKind, NodeInfo, NodeStatus, Role, ToolCall, ToolResult,
 };
 
 pub struct ModelPickerState {
@@ -95,7 +94,6 @@ pub struct App {
     pub interview_picker: Option<InterviewPickerState>,
     pub mode: AgentMode,
     pub flat: bool,
-    pub caveman: CavemanLevel,
     /// Live agent tree: nodes in enter order, with depth-based hierarchy.
     pub tree: Vec<NodeInfo>,
     /// Tool call counter for the currently active subtask node.
@@ -138,7 +136,6 @@ impl App {
             interview_picker: None,
             mode: AgentMode::default(),
             flat: false,
-            caveman: CavemanLevel::Off,
             tree: Vec::new(),
             subtask_tool_calls: 0,
         }
@@ -461,7 +458,6 @@ impl App {
          — Ctrl+E: end of line
          — Shift+Tab: cycle mode (plan → thorough → oneshot)
          — /flat: toggle flat mode (single-level, no delegation)
-         — /caveman: cycle caveman mode (off → lite → full → ultra)
          — Ctrl+V: paste image from clipboard
          — Up/Down: input history
          — Shift+Up/Down: scroll chat

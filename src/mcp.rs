@@ -214,13 +214,25 @@ impl McpClient {
             .await?;
         debug!(tool = %call.name, "MCP execute done");
 
-        let content = match resp["result"]["content"].as_array().cloned() {
-            Some(arr) => arr,
-            None => {
-                tracing::warn!(tool = %call.name, server = %self.server_name, "MCP tool response missing result.content array, assuming empty");
-                vec![]
-            }
-        };
+        if let Some(err) = resp.get("error") {
+            let msg = err
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown MCP error");
+            anyhow::bail!("{msg}");
+        }
+        if resp["result"]["isError"].as_bool() == Some(true) {
+            let msg = resp["result"]["content"]
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(|c| c["text"].as_str())
+                .unwrap_or("tool reported error");
+            anyhow::bail!("{msg}");
+        }
+        let content = resp["result"]["content"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         let text = content
             .iter()
             .filter_map(|c| {

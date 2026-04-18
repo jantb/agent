@@ -770,14 +770,6 @@ fn draw_status(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         right_spans.push(Span::raw("  "));
     }
 
-    if app.caveman.is_active() {
-        right_spans.push(Span::styled(
-            format!("caveman:{}", app.caveman.label()),
-            Style::default().fg(Color::Yellow),
-        ));
-        right_spans.push(Span::raw("  "));
-    }
-
     if app.mode != AgentMode::Oneshot {
         right_spans.push(Span::styled(
             app.mode.label(),
@@ -1254,6 +1246,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "debug helper: prints buffer contents, not a real assertion"]
     fn diagnose_subtask_rendering() {
         use ratatui::backend::TestBackend;
         use ratatui::style::Color;

@@ -28,10 +28,6 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "/flat",
         desc: "Toggle flat mode (single-level)",
     },
-    SlashCommand {
-        name: "/caveman",
-        desc: "Cycle caveman mode (terse output)",
-    },
 ];
 
 pub struct Autocomplete {
