@@ -19,7 +19,8 @@ pub(crate) fn resolve_safe(requested: &str, working_dir: &Path) -> Result<PathBu
         .canonicalize()
         .map_err(|e| format!("failed to canonicalize working directory: {e}"))?;
 
-    let raw = if Path::new(requested).is_absolute() {
+    let is_absolute = Path::new(requested).is_absolute();
+    let raw = if is_absolute {
         PathBuf::from(requested)
     } else {
         canonical_wd.join(requested)
@@ -27,11 +28,38 @@ pub(crate) fn resolve_safe(requested: &str, working_dir: &Path) -> Result<PathBu
 
     let normalized = normalize_path(&raw);
 
-    if !normalized.starts_with(&canonical_wd) {
-        return Err(format!("path escapes working directory: {requested}"));
+    if normalized.starts_with(&canonical_wd) {
+        return Ok(normalized);
     }
 
-    Ok(normalized)
+    if is_absolute {
+        if let Some(recovered) = suffix_match_fallback(&normalized, &canonical_wd) {
+            return Ok(recovered);
+        }
+    }
+
+    Err(format!(
+        "path escapes working directory '{}': {requested}",
+        canonical_wd.display()
+    ))
+}
+
+/// When an absolute path has the wrong prefix but the WD basename appears in it,
+/// recover by taking everything after the last occurrence of the WD basename.
+fn suffix_match_fallback(abs: &Path, canonical_wd: &Path) -> Option<PathBuf> {
+    let wd_base = canonical_wd.file_name()?;
+    let components: Vec<Component> = abs.components().collect();
+    // Find last Normal component equal to wd_base
+    let idx = components
+        .iter()
+        .rposition(|c| matches!(c, Component::Normal(n) if *n == wd_base))?;
+    let suffix: PathBuf = components[idx + 1..].iter().collect();
+    let candidate = normalize_path(&canonical_wd.join(suffix));
+    if candidate.starts_with(canonical_wd) {
+        Some(candidate)
+    } else {
+        None
+    }
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -121,6 +149,43 @@ mod tests {
     fn escape_via_absolute_path_outside() {
         let dir = tmp();
         let err = resolve_safe("/etc/passwd", dir.path()).unwrap_err();
+        assert!(err.contains("escapes working directory"));
+    }
+
+    #[test]
+    fn recovers_absolute_path_with_matching_wd_basename() {
+        let dir = tmp();
+        let canonical = dir.path().canonicalize().unwrap();
+        let wd_base = canonical.file_name().unwrap().to_str().unwrap();
+        let bogus = format!("/bogus/prefix/{wd_base}/Cargo.toml");
+        let result = resolve_safe(&bogus, dir.path()).unwrap();
+        assert_eq!(result, canonical.join("Cargo.toml"));
+    }
+
+    #[test]
+    fn recovers_bare_wd_via_basename() {
+        let dir = tmp();
+        let canonical = dir.path().canonicalize().unwrap();
+        let wd_base = canonical.file_name().unwrap().to_str().unwrap();
+        let bogus = format!("/bogus/{wd_base}");
+        let result = resolve_safe(&bogus, dir.path()).unwrap();
+        assert_eq!(result, canonical);
+    }
+
+    #[test]
+    fn rejects_unrecoverable_absolute_path() {
+        let dir = tmp();
+        let err = resolve_safe("/etc/passwd", dir.path()).unwrap_err();
+        assert!(err.contains("escapes working directory"));
+    }
+
+    #[test]
+    fn rejects_escape_via_dotdot_even_with_basename_in_suffix() {
+        let dir = tmp();
+        let canonical = dir.path().canonicalize().unwrap();
+        let wd_base = canonical.file_name().unwrap().to_str().unwrap();
+        let bogus = format!("../../{wd_base}/evil");
+        let err = resolve_safe(&bogus, dir.path()).unwrap_err();
         assert!(err.contains("escapes working directory"));
     }
 }
