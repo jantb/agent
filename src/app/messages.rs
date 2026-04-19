@@ -8,6 +8,7 @@ impl App {
             role: Role::User,
             content: text,
             kind: MessageKind::Text,
+            rendered: std::cell::RefCell::new(None),
         });
         if self.auto_scroll {
             self.scroll_offset = 0;
@@ -25,6 +26,7 @@ impl App {
                 name: call.name.clone(),
                 arguments: args_summary,
             },
+            rendered: std::cell::RefCell::new(None),
         });
         if call.name != "delegate_task" {
             self.subtask_tool_calls += 1;
@@ -55,6 +57,7 @@ impl App {
                 name,
                 is_error: result.is_error,
             },
+            rendered: std::cell::RefCell::new(None),
         });
     }
 
@@ -86,6 +89,7 @@ impl App {
             role: Role::User,
             content: text.clone(),
             kind: MessageKind::Queued,
+            rendered: std::cell::RefCell::new(None),
         });
         self.message_queue.push_back((text, images));
         if self.auto_scroll {

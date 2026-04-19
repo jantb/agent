@@ -1,3 +1,6 @@
+use std::cell::RefCell;
+
+use ratatui::text::Line;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
@@ -239,11 +242,30 @@ mod tests {
     }
 }
 
+/// Cached rendered lines for a single chat message.
+#[derive(Clone)]
+pub struct RenderedLines {
+    pub content_len: usize,
+    pub kind_tag: u8,
+    pub lines: Vec<Line<'static>>,
+}
+
+impl std::fmt::Debug for RenderedLines {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenderedLines")
+            .field("content_len", &self.content_len)
+            .field("kind_tag", &self.kind_tag)
+            .field("lines_count", &self.lines.len())
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
     pub role: Role,
     pub content: String,
     pub kind: MessageKind,
+    pub rendered: RefCell<Option<RenderedLines>>,
 }
 
 #[derive(Debug, Clone)]
@@ -270,6 +292,21 @@ pub enum MessageKind {
     PlanUpdate {
         items: Vec<PlanItem>,
     },
+}
+
+impl MessageKind {
+    pub fn kind_tag(&self) -> u8 {
+        match self {
+            MessageKind::Text => 0,
+            MessageKind::Queued => 1,
+            MessageKind::Thinking => 2,
+            MessageKind::ToolCall { .. } => 3,
+            MessageKind::ToolResult { .. } => 4,
+            MessageKind::SubtaskEnter { .. } => 5,
+            MessageKind::SubtaskExit { .. } => 6,
+            MessageKind::PlanUpdate { .. } => 7,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

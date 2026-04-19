@@ -89,35 +89,41 @@ pub async fn run_loop(
     }
 
     let mut current_depth: usize = 0;
+    let mut should_draw = true; // draw the initial frame
     loop {
         app.tick();
-        terminal.draw(|f| ui::draw(f, &app))?;
-        if let Ok(size) = terminal.size() {
-            app.viewport_height = size.height.saturating_sub(5) as u32;
+        if should_draw {
+            terminal.draw(|f| ui::draw(f, &app))?;
+            if let Ok(size) = terminal.size() {
+                app.viewport_height = size.height.saturating_sub(5) as u32;
+            }
         }
+        should_draw = false;
 
         tokio::select! {
             maybe_event = reader.next() => {
                 commands::handle_terminal_event(maybe_event, &mut app, &action_tx).await;
+                should_draw = true;
             }
             agent_event = event_rx.recv() => {
-                let was_streaming = app.streaming;
-                if !events::handle_agent_event(agent_event, &mut app, &action_tx, &mut current_depth).await {
-                    break;
-                }
-                // Notify script task only on the streaming → idle transition.
-                if was_streaming && !app.streaming {
-                    script_turn_done_writer.notify_one();
-                }
+                let (cont, streaming_to_idle) = events::drain_agent_events(
+                    agent_event, &mut event_rx, &mut app, &action_tx, &mut current_depth,
+                ).await;
+                if !cont { break; }
+                if streaming_to_idle { script_turn_done_writer.notify_one(); }
+                // Don't set should_draw — tick covers it. (Streaming capped to ~20 fps.)
             }
             script_msg = script_rx.recv() => {
                 if let Some(text) = script_msg {
                     app.add_user_message(text.clone());
                     app.start_assistant_turn();
                     action_tx.send(UserAction::SendMessage { text, images: vec![], mode: app.mode }).await.ok();
+                    should_draw = true;
                 }
             }
-            _ = tick.tick() => {}
+            _ = tick.tick() => {
+                should_draw = true;
+            }
         }
 
         if !app.running {

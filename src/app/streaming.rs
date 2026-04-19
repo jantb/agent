@@ -45,6 +45,7 @@ impl App {
                 role: Role::Assistant,
                 content: think,
                 kind: MessageKind::Thinking,
+                rendered: std::cell::RefCell::new(None),
             });
         }
         self.thinking = false;
@@ -58,6 +59,7 @@ impl App {
                 role: Role::Assistant,
                 content: text,
                 kind: MessageKind::Text,
+                rendered: std::cell::RefCell::new(None),
             });
         }
         self.streaming = false;

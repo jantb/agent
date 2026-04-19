@@ -244,6 +244,7 @@ pub async fn apply_command(
                 role: Role::Assistant,
                 content: format!("Mode: {}", app.mode.label()),
                 kind: MessageKind::Text,
+                rendered: std::cell::RefCell::new(None),
             });
         }
         UiCommand::PasteImage => {
@@ -294,6 +295,7 @@ pub async fn handle_slash_or_send(
             role: Role::Assistant,
             content: App::help_text().to_string(),
             kind: MessageKind::Text,
+            rendered: std::cell::RefCell::new(None),
         });
     } else if text.trim() == "/mode" {
         app.mode = app.mode.cycle();
@@ -301,6 +303,7 @@ pub async fn handle_slash_or_send(
             role: Role::Assistant,
             content: format!("Mode: {}", app.mode.label()),
             kind: MessageKind::Text,
+            rendered: std::cell::RefCell::new(None),
         });
     } else if text.trim() == "/flat" {
         app.flat = !app.flat;
@@ -313,6 +316,7 @@ pub async fn handle_slash_or_send(
             role: Role::Assistant,
             content: format!("Mode: {label}"),
             kind: MessageKind::Text,
+            rendered: std::cell::RefCell::new(None),
         });
         if let Err(e) = action_tx.send(UserAction::ToggleFlat(app.flat)).await {
             tracing::error!("failed to send ToggleFlat action: {e}");

@@ -53,11 +53,13 @@ impl From<SessionMessage> for ChatMessage {
                 role,
                 content,
                 kind: MessageKind::Text,
+                rendered: std::cell::RefCell::new(None),
             },
             SessionMessage::Thinking { content } => ChatMessage {
                 role: Role::Assistant,
                 content,
                 kind: MessageKind::Thinking,
+                rendered: std::cell::RefCell::new(None),
             },
             SessionMessage::ToolCall {
                 id,
@@ -71,6 +73,7 @@ impl From<SessionMessage> for ChatMessage {
                     name,
                     arguments,
                 },
+                rendered: std::cell::RefCell::new(None),
             },
             SessionMessage::ToolResult {
                 name,
@@ -81,6 +84,7 @@ impl From<SessionMessage> for ChatMessage {
                 role: Role::Tool,
                 content,
                 kind: MessageKind::ToolResult { name, is_error },
+                rendered: std::cell::RefCell::new(None),
             },
         }
     }
@@ -110,6 +114,7 @@ mod tests {
             role: Role::Assistant,
             content: "deep thoughts".into(),
             kind: MessageKind::Thinking,
+            rendered: std::cell::RefCell::new(None),
         };
         let session: SessionMessage = SessionMessage::from(&chat);
         let back: ChatMessage = session.into();
@@ -127,6 +132,7 @@ mod tests {
                 name: "shell".into(),
                 arguments: "{}".into(),
             },
+            rendered: std::cell::RefCell::new(None),
         };
         let session: SessionMessage = SessionMessage::from(&chat);
         let back: ChatMessage = session.into();

@@ -19,6 +19,7 @@ impl App {
             role: Role::Assistant,
             content: format!("depth {depth}: {label}"),
             kind: MessageKind::SubtaskEnter { depth, label },
+            rendered: std::cell::RefCell::new(None),
         });
         self.subtask_tool_calls = 0;
     }
@@ -51,6 +52,7 @@ impl App {
             role: Role::Assistant,
             content: format!("depth {depth} done"),
             kind: MessageKind::SubtaskExit { depth },
+            rendered: std::cell::RefCell::new(None),
         });
         self.subtask_tool_calls = 0;
     }

@@ -7,7 +7,7 @@ use ratatui::{
 
 use crate::app::App;
 use crate::markdown::markdown_to_lines;
-use crate::types::{MessageKind, PlanStatus, Role};
+use crate::types::{MessageKind, PlanStatus, RenderedLines, Role};
 
 use super::util::{compute_scroll, truncate};
 
@@ -65,7 +65,20 @@ pub(super) fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rec
                     }
                 }
                 _ => {
-                    lines.extend(markdown_to_lines(&msg.content, "  "));
+                    let cache_hit = msg.rendered.borrow().as_ref().is_some_and(|r| {
+                        r.content_len == msg.content.len() && r.kind_tag == msg.kind.kind_tag()
+                    });
+                    if !cache_hit {
+                        let new_lines = markdown_to_lines(&msg.content, "  ");
+                        *msg.rendered.borrow_mut() = Some(RenderedLines {
+                            content_len: msg.content.len(),
+                            kind_tag: msg.kind.kind_tag(),
+                            lines: new_lines,
+                        });
+                    }
+                    if let Some(r) = msg.rendered.borrow().as_ref() {
+                        lines.extend(r.lines.iter().cloned());
+                    }
                 }
             },
             MessageKind::Queued => {
@@ -281,4 +294,97 @@ pub(super) fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rec
     );
 
     frame.render_widget(paragraph.scroll((scroll, 0)), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::{backend::TestBackend, text::Line, Terminal};
+
+    use crate::{
+        app::App,
+        types::{ChatMessage, MessageKind, RenderedLines, Role},
+        ui::draw,
+    };
+
+    fn make_app_with_assistant_msg(content: &str) -> App {
+        let mut app = App::new("model".into(), std::path::PathBuf::from("."));
+        app.messages.push(ChatMessage {
+            role: Role::Assistant,
+            content: content.to_string(),
+            kind: MessageKind::Text,
+            rendered: std::cell::RefCell::new(None),
+        });
+        app
+    }
+
+    fn draw_app(app: &App) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn buffer_contains(buffer: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        (0..30u16).any(|r| {
+            (0..100u16)
+                .map(|c| {
+                    buffer
+                        .cell(ratatui::layout::Position::new(c, r))
+                        .map(|cell| cell.symbol())
+                        .unwrap_or(" ")
+                })
+                .collect::<String>()
+                .contains(needle)
+        })
+    }
+
+    #[test]
+    fn rendered_cache_populated_on_first_draw() {
+        let app = make_app_with_assistant_msg("# Hello\n\nbody");
+        draw_app(&app);
+        let borrow = app.messages[0].rendered.borrow();
+        let r = borrow
+            .as_ref()
+            .expect("cache should be populated after draw");
+        assert_eq!(r.content_len, "# Hello\n\nbody".len());
+        assert_eq!(r.kind_tag, 0); // MessageKind::Text
+    }
+
+    #[test]
+    fn rendered_cache_reused_when_content_unchanged() {
+        let app = make_app_with_assistant_msg("# Hello\n\nbody");
+        // First draw — populates cache.
+        draw_app(&app);
+        // Overwrite cache with sentinel.
+        *app.messages[0].rendered.borrow_mut() = Some(RenderedLines {
+            content_len: "# Hello\n\nbody".len(),
+            kind_tag: 0,
+            lines: vec![Line::from("SENTINEL_TOKEN_XYZ")],
+        });
+        // Second draw — should use cache, not recompute.
+        let buffer = draw_app(&app);
+        assert!(
+            buffer_contains(&buffer, "SENTINEL_TOKEN_XYZ"),
+            "sentinel must appear in buffer — cache was not reused"
+        );
+    }
+
+    #[test]
+    fn rendered_cache_invalidated_on_content_change() {
+        let mut app = make_app_with_assistant_msg("# Hello\n\nbody");
+        // First draw — populates cache with old content.
+        draw_app(&app);
+        // Mutate content to different length.
+        let new_content = "Completely different content here for the test.".to_string();
+        let new_len = new_content.len();
+        app.messages[0].content = new_content;
+        // Second draw — cache must be regenerated for new content.
+        draw_app(&app);
+        let borrow = app.messages[0].rendered.borrow();
+        let r = borrow.as_ref().expect("cache should exist");
+        assert_eq!(
+            r.content_len, new_len,
+            "cache should reflect new content length"
+        );
+    }
 }

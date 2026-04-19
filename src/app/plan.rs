@@ -9,6 +9,7 @@ impl App {
             role: Role::Assistant,
             content: format!("plan updated: {} items", items.len()),
             kind: MessageKind::PlanUpdate { items },
+            rendered: std::cell::RefCell::new(None),
         });
         if self.auto_scroll {
             self.scroll_offset = 0;
