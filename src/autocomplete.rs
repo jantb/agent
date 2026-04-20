@@ -25,6 +25,14 @@ pub const COMMANDS: &[SlashCommand] = &[
         desc: "Cycle mode: plan → thorough → oneshot",
     },
     SlashCommand {
+        name: "/review",
+        desc: "Verify task solved + test coverage",
+    },
+    SlashCommand {
+        name: "/simplify",
+        desc: "Refactor for clarity, reuse, idiomatic style",
+    },
+    SlashCommand {
         name: "/flat",
         desc: "Toggle flat mode (single-level)",
     },

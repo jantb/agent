@@ -104,6 +104,19 @@ pub use definitions::{
 pub(crate) use dispatch::execute_built_in_with_mode;
 pub use selection::is_flat_model;
 
+/// Returns true if any component in `rel` (relative path) starts with '.'
+/// or is in IGNORE_DIRS. Used to skip hidden/ignored directories in listings.
+pub(crate) fn is_ignored_path(rel: &Path) -> bool {
+    rel.components().any(|c| {
+        if let Component::Normal(s) = c {
+            let name = s.to_string_lossy();
+            name.starts_with('.') || IGNORE_DIRS.contains(&name.as_ref())
+        } else {
+            false
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +124,25 @@ mod tests {
 
     fn tmp() -> TempDir {
         tempfile::tempdir().expect("tempdir")
+    }
+
+    #[test]
+    fn is_ignored_path_detects_dot_dirs() {
+        assert!(is_ignored_path(Path::new(".git/config")));
+        assert!(is_ignored_path(Path::new("src/.cache/foo")));
+        assert!(is_ignored_path(Path::new(".DS_Store")));
+    }
+
+    #[test]
+    fn is_ignored_path_detects_ignore_dirs() {
+        assert!(is_ignored_path(Path::new("target/debug/foo")));
+        assert!(is_ignored_path(Path::new("node_modules/x")));
+    }
+
+    #[test]
+    fn is_ignored_path_passes_normal() {
+        assert!(!is_ignored_path(Path::new("src/main.rs")));
+        assert!(!is_ignored_path(Path::new("Cargo.toml")));
     }
 
     #[test]

@@ -124,6 +124,8 @@ impl App {
          — Ctrl+A: start of line
          — Ctrl+E: end of line
          — Shift+Tab: cycle mode (plan → thorough → oneshot)
+         — /review <scope>: verify the task is solved + check test coverage
+         — /simplify <scope>: refactor for clarity, reuse, and idiomatic style
          — /flat: toggle flat mode (single-level, no delegation)
          — Ctrl+V: paste image from clipboard
          — Up/Down: input history

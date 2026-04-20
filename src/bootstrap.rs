@@ -76,9 +76,13 @@ pub async fn setup(cfg: SetupConfig) -> anyhow::Result<Setup> {
     tracing::info!(model = %cfg.model, ollama_url = %cfg.ollama_url, "agent starting");
 
     // ── MCP ───────────────────────────────────────────────────────────────────
-    let mcp_registry = match config::load_config(&working_dir).map_err(anyhow::Error::from)? {
-        Some(c) => McpRegistry::from_config(&c, &http).await,
-        None => McpRegistry::empty(),
+    let mcp_registry = match config::load_config(&working_dir) {
+        Ok(Some(c)) => McpRegistry::from_config(&c, &http).await,
+        Ok(None) => McpRegistry::empty(),
+        Err(e) => {
+            tracing::warn!(".mcp.json ignored: {e}");
+            McpRegistry::empty()
+        }
     };
     tracing::info!(connected = ?mcp_registry.connected_servers().await, "MCP registry ready");
 

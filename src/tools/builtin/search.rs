@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
-use crate::tools::IGNORE_DIRS;
+use crate::tools::{is_ignored_path, IGNORE_DIRS};
 use crate::types::ToolCall;
 
 use crate::tools::resolve_safe;
@@ -64,6 +64,9 @@ pub async fn run_glob_files(call: &ToolCall, working_dir: &Path) -> Result<Strin
                 break;
             }
             let rel = entry.strip_prefix(&wd).unwrap_or(&entry);
+            if is_ignored_path(rel) {
+                continue;
+            }
             results.push(rel.to_string_lossy().to_string());
         }
         if results.is_empty() {

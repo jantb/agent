@@ -27,7 +27,7 @@ pub struct Config {
 
 #[derive(Deserialize)]
 struct RawConfig {
-    #[serde(rename = "mcpServers")]
+    #[serde(rename = "mcpServers", default)]
     mcp_servers: HashMap<String, RawServerEntry>,
 }
 
@@ -104,6 +104,22 @@ mod tests {
     fn malformed_config_returns_error() {
         let dir = TempDir::new().unwrap();
         write_file(dir.path(), ".mcp.json", "{ not valid json }");
+        let result = load_config(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn empty_object_returns_empty_servers() {
+        let dir = TempDir::new().unwrap();
+        write_file(dir.path(), ".mcp.json", "{}");
+        let config = load_config(dir.path()).unwrap().unwrap();
+        assert!(config.servers.is_empty());
+    }
+
+    #[test]
+    fn empty_file_is_malformed() {
+        let dir = TempDir::new().unwrap();
+        write_file(dir.path(), ".mcp.json", "");
         let result = load_config(dir.path());
         assert!(result.is_err());
     }

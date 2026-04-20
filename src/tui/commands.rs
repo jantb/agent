@@ -321,6 +321,46 @@ pub async fn handle_slash_or_send(
         if let Err(e) = action_tx.send(UserAction::ToggleFlat(app.flat)).await {
             tracing::error!("failed to send ToggleFlat action: {e}");
         }
+    } else if let Some(rest) = text
+        .trim()
+        .strip_prefix("/review")
+        .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))
+    {
+        let scope = rest.trim_start();
+        let body = format!("{}{}", crate::prompts::REVIEW_SKILL_PREAMBLE, scope);
+        let images = app.take_pending_images();
+        app.add_user_message(text.clone());
+        app.start_assistant_turn();
+        if let Err(e) = action_tx
+            .send(UserAction::SendMessage {
+                text: body,
+                images,
+                mode: app.mode,
+            })
+            .await
+        {
+            tracing::error!("failed to send SendMessage action: {e}");
+        }
+    } else if let Some(rest) = text
+        .trim()
+        .strip_prefix("/simplify")
+        .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))
+    {
+        let scope = rest.trim_start();
+        let body = format!("{}{}", crate::prompts::SIMPLIFY_SKILL_PREAMBLE, scope);
+        let images = app.take_pending_images();
+        app.add_user_message(text.clone());
+        app.start_assistant_turn();
+        if let Err(e) = action_tx
+            .send(UserAction::SendMessage {
+                text: body,
+                images,
+                mode: app.mode,
+            })
+            .await
+        {
+            tracing::error!("failed to send SendMessage action: {e}");
+        }
     } else {
         let images = app.take_pending_images();
         app.add_user_message(text.clone());
