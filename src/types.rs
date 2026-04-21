@@ -292,6 +292,7 @@ pub enum MessageKind {
     PlanUpdate {
         items: Vec<PlanItem>,
     },
+    Error,
 }
 
 impl MessageKind {
@@ -305,6 +306,7 @@ impl MessageKind {
             MessageKind::SubtaskEnter { .. } => 5,
             MessageKind::SubtaskExit { .. } => 6,
             MessageKind::PlanUpdate { .. } => 7,
+            MessageKind::Error => 8,
         }
     }
 }

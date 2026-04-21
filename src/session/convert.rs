@@ -31,7 +31,8 @@ impl From<&ChatMessage> for SessionMessage {
             MessageKind::Queued
             | MessageKind::SubtaskEnter { .. }
             | MessageKind::SubtaskExit { .. }
-            | MessageKind::PlanUpdate { .. } => SessionMessage::Text {
+            | MessageKind::PlanUpdate { .. }
+            | MessageKind::Error => SessionMessage::Text {
                 role: msg.role.clone(),
                 content: msg.content.clone(),
                 images: vec![],

@@ -79,7 +79,7 @@ pub async fn handle_agent_event(
                 question,
                 suggestions,
                 selected: 0,
-                custom_input: String::new(),
+                custom_input: crate::input::InputState::new(),
                 custom_mode: false,
                 answer_tx: Some(answer_tx.0),
             });

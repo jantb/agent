@@ -15,9 +15,9 @@ pub(super) fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rec
     let mut lines: Vec<Line> = Vec::new();
     let separator = "─".repeat(area.width as usize);
 
-    if let Some(date) = &app.resumed_session {
+    if let Some(banner) = &app.resumed_session {
         lines.push(Line::from(Span::styled(
-            format!("  Resumed session from {date}"),
+            format!("  Resumed session · {banner}"),
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::ITALIC),
@@ -216,6 +216,15 @@ pub(super) fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rec
                     )));
                 }
             }
+            MessageKind::Error => {
+                for (i, text_line) in msg.content.lines().enumerate() {
+                    let prefix = if i == 0 { "  ✗ " } else { "    " };
+                    lines.push(Line::from(Span::styled(
+                        format!("{prefix}{text_line}"),
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    )));
+                }
+            }
             MessageKind::ToolResult { name, is_error } => {
                 let (symbol, color) = if *is_error {
                     ("\u{2717}", Color::Red)
@@ -265,7 +274,20 @@ pub(super) fn draw_chat(frame: &mut Frame, app: &App, area: ratatui::layout::Rec
             ),
         ]));
         if !app.current_thinking_text.is_empty() {
-            for think_line in app.current_thinking_text.lines() {
+            let content_lines: Vec<&str> = app.current_thinking_text.lines().collect();
+            let total = content_lines.len();
+            let max_visible = 3;
+            let start = total.saturating_sub(max_visible);
+            if start > 0 {
+                lines.push(Line::from(vec![
+                    Span::styled("  \u{2502} ", Style::default().fg(Color::Indexed(243))),
+                    Span::styled(
+                        format!("[{start} earlier lines]"),
+                        Style::default().fg(Color::Indexed(240)),
+                    ),
+                ]));
+            }
+            for think_line in &content_lines[start..] {
                 lines.push(Line::from(vec![
                     Span::styled("  \u{2502} ", Style::default().fg(Color::Indexed(243))),
                     Span::styled(

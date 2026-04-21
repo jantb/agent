@@ -25,35 +25,49 @@ pub struct Config {
     pub servers: Vec<McpServerConfig>,
 }
 
-#[derive(Deserialize)]
-struct RawConfig {
-    #[serde(rename = "mcpServers", default)]
-    mcp_servers: HashMap<String, RawServerEntry>,
-}
-
-#[derive(Deserialize)]
-struct RawServerEntry {
-    url: String,
-    #[serde(default)]
-    headers: HashMap<String, String>,
-}
-
 pub fn load_config(dir: &Path) -> Result<Option<Config>, ConfigError> {
     let path = dir.join(".mcp.json");
     if !path.exists() {
         return Ok(None);
     }
     let text = std::fs::read_to_string(&path)?;
-    let raw: RawConfig = serde_json::from_str(&text)?;
-    let servers = raw
-        .mcp_servers
-        .into_iter()
-        .map(|(name, entry)| McpServerConfig {
+    if text.trim().is_empty() {
+        tracing::warn!(".mcp.json is empty; ignoring");
+        return Ok(Some(Config { servers: vec![] }));
+    }
+    let value: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(".mcp.json ignored: {e}");
+            return Ok(Some(Config { servers: vec![] }));
+        }
+    };
+    let servers_obj = value
+        .get("mcpServers")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let mut servers = Vec::new();
+    for (name, entry) in servers_obj {
+        let Some(url) = entry.get("url").and_then(|v| v.as_str()) else {
+            tracing::warn!(server = %name, ".mcp.json entry skipped: missing 'url'");
+            continue;
+        };
+        let headers = entry
+            .get("headers")
+            .and_then(|v| v.as_object())
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect::<HashMap<String, String>>()
+            })
+            .unwrap_or_default();
+        servers.push(McpServerConfig {
             name,
-            url: entry.url,
-            headers: entry.headers,
-        })
-        .collect();
+            url: url.to_string(),
+            headers,
+        });
+    }
     Ok(Some(Config { servers }))
 }
 
@@ -101,11 +115,11 @@ mod tests {
     }
 
     #[test]
-    fn malformed_config_returns_error() {
+    fn malformed_json_is_ignored() {
         let dir = TempDir::new().unwrap();
         write_file(dir.path(), ".mcp.json", "{ not valid json }");
-        let result = load_config(dir.path());
-        assert!(result.is_err());
+        let config = load_config(dir.path()).unwrap().unwrap();
+        assert!(config.servers.is_empty());
     }
 
     #[test]
@@ -117,11 +131,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_file_is_malformed() {
+    fn empty_file_is_ignored() {
         let dir = TempDir::new().unwrap();
         write_file(dir.path(), ".mcp.json", "");
-        let result = load_config(dir.path());
-        assert!(result.is_err());
+        let config = load_config(dir.path()).unwrap().unwrap();
+        assert!(config.servers.is_empty());
     }
 
     #[test]
@@ -134,5 +148,47 @@ mod tests {
         );
         let config = load_config(dir.path()).unwrap().unwrap();
         assert!(config.servers[0].headers.is_empty());
+    }
+
+    #[test]
+    fn missing_mcp_servers_field_returns_empty() {
+        let dir = TempDir::new().unwrap();
+        write_file(dir.path(), ".mcp.json", r#"{"other": 1}"#);
+        let config = load_config(dir.path()).unwrap().unwrap();
+        assert!(config.servers.is_empty());
+    }
+
+    #[test]
+    fn entry_missing_url_is_skipped() {
+        let dir = TempDir::new().unwrap();
+        write_file(
+            dir.path(),
+            ".mcp.json",
+            r#"{"mcpServers":{"bad":{"headers":{}},"good":{"url":"http://y"}}}"#,
+        );
+        let config = load_config(dir.path()).unwrap().unwrap();
+        assert_eq!(config.servers.len(), 1);
+        assert_eq!(config.servers[0].name, "good");
+    }
+
+    #[test]
+    fn non_object_root_returns_empty() {
+        let dir = TempDir::new().unwrap();
+        write_file(dir.path(), ".mcp.json", "[]");
+        let config = load_config(dir.path()).unwrap().unwrap();
+        assert!(config.servers.is_empty());
+    }
+
+    #[test]
+    fn extra_fields_on_server_entry_are_ignored() {
+        let dir = TempDir::new().unwrap();
+        write_file(
+            dir.path(),
+            ".mcp.json",
+            r#"{"mcpServers":{"s":{"type":"http","url":"http://x"}}}"#,
+        );
+        let config = load_config(dir.path()).unwrap().unwrap();
+        assert_eq!(config.servers.len(), 1);
+        assert_eq!(config.servers[0].url, "http://x");
     }
 }

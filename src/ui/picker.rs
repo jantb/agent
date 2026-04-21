@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::autocomplete::COMMANDS;
+use crate::autocomplete::{COMMANDS, HINTS};
 
 use super::util::word_wrap;
 
@@ -20,12 +20,15 @@ pub(super) fn draw_autocomplete(
     }
     let max_visible = 10;
     let count = ac.filtered.len().min(max_visible);
-    let popup_height = count as u16 + 2;
-    let popup_width = 35u16.min(input_area.width);
+    // Only show hints when the prefix is just "/" (the full palette).
+    let show_hints = ac.filtered.len() == COMMANDS.len();
+    let hint_rows = if show_hints { HINTS.len() + 1 } else { 0 };
+    let popup_height = (count + hint_rows) as u16 + 2;
+    let popup_width = 44u16.min(input_area.width);
     let popup_y = input_area.y.saturating_sub(popup_height);
     let area = Rect::new(input_area.x, popup_y, popup_width, popup_height);
 
-    let lines: Vec<Line> = ac
+    let mut lines: Vec<Line> = ac
         .filtered
         .iter()
         .take(max_visible)
@@ -57,6 +60,22 @@ pub(super) fn draw_autocomplete(
         })
         .collect();
 
+    if show_hints {
+        lines.push(Line::from(Span::styled(
+            " — keys —",
+            Style::default().fg(Color::DarkGray),
+        )));
+        for (k, d) in HINTS {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {:<10}", k),
+                    Style::default().fg(Color::Indexed(243)),
+                ),
+                Span::styled(format!(" {}", d), Style::default().fg(Color::Indexed(240))),
+            ]));
+        }
+    }
+
     frame.render_widget(Clear, area);
     frame.render_widget(
         Paragraph::new(lines)
@@ -71,8 +90,9 @@ pub(super) fn draw_model_picker(
     area: Rect,
 ) {
     let max_visible = 10usize;
-    let count = picker.models.len().min(max_visible);
-    let popup_height = count as u16 + 2;
+    let count = picker.filtered.len().min(max_visible);
+    // +2 border, +1 filter line
+    let popup_height = count as u16 + 3;
     let popup_width = 40u16.min(area.width);
     let popup_x = area.x + area.width.saturating_sub(popup_width) / 2;
     let popup_y = area.y + area.height.saturating_sub(popup_height) / 2;
@@ -84,37 +104,49 @@ pub(super) fn draw_model_picker(
         0
     };
 
-    let lines: Vec<Line> = picker
-        .models
+    let mut lines: Vec<Line> = Vec::with_capacity(count + 1);
+    lines.push(Line::from(vec![
+        Span::styled(" ▸ ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            picker.filter.clone(),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("█", Style::default().fg(Color::DarkGray)),
+    ]));
+
+    for (row, &model_idx) in picker
+        .filtered
         .iter()
         .enumerate()
         .skip(start)
         .take(max_visible)
-        .map(|(i, name)| {
-            let (bg, fg) = if i == picker.selected {
-                (Color::DarkGray, Color::White)
-            } else {
-                (Color::Reset, Color::White)
-            };
-            Line::from(Span::styled(
-                format!(" {name}"),
-                Style::default()
-                    .bg(bg)
-                    .fg(fg)
-                    .add_modifier(if i == picker.selected {
-                        Modifier::BOLD
-                    } else {
-                        Modifier::empty()
-                    }),
-            ))
-        })
-        .collect();
+    {
+        let name = &picker.models[model_idx];
+        let (bg, fg) = if row == picker.selected {
+            (Color::DarkGray, Color::White)
+        } else {
+            (Color::Reset, Color::White)
+        };
+        lines.push(Line::from(Span::styled(
+            format!(" {name}"),
+            Style::default()
+                .bg(bg)
+                .fg(fg)
+                .add_modifier(if row == picker.selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        )));
+    }
 
     frame.render_widget(Clear, popup_area);
     frame.render_widget(
         Paragraph::new(lines).block(
             Block::bordered()
-                .title(" Select model ")
+                .title(" Select model (type to filter) ")
                 .border_style(Style::default().fg(Color::Cyan)),
         ),
         popup_area,
@@ -171,7 +203,7 @@ pub(super) fn draw_interview_picker(
         Color::Reset
     };
     lines.push(Line::from(Span::styled(
-        format!("{custom_marker}{}{cursor}", picker.custom_input),
+        format!("{custom_marker}{}{cursor}", picker.custom_input.text),
         Style::default()
             .bg(custom_bg)
             .fg(Color::White)

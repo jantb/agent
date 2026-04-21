@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use crate::autocomplete::Autocomplete;
 use crate::input::InputState;
-use crate::types::{AgentMode, ChatMessage, NodeInfo, PlanItem};
+use crate::types::{AgentMode, ChatMessage, MessageKind, NodeInfo, PlanItem, Role};
 
 mod messages;
 mod pickers;
@@ -113,21 +113,27 @@ impl App {
         "Commands:
          — /clear, /new: clear conversation
          — /help: show this help
+         — /model: switch Ollama model (type to filter)
+         — /mode [plan|thorough|oneshot]: set mode (no arg cycles)
+         — /flat: toggle flat mode (single-level, no delegation)
+         — /memory [keyword]: list or search stored memories
+         — /mcp: show MCP server status and failure reasons
+         — /show last: re-print the most recent tool result in full
+         — /review <scope>: verify the task is solved + check test coverage
+         — /simplify <scope>: refactor for clarity, reuse, and idiomatic style
          Keybindings:
          — Enter: send message
          — Shift+Enter: newline
          — Tab: autocomplete /commands
-         — Esc: cancel streaming
-         — Ctrl+C: quit
+         — Esc: clear input when idle; cancel turn when streaming
+         — Ctrl+C: cancel turn when streaming; quit when idle
+         — Ctrl+L: clear chat history
          — Ctrl+U: clear input
          — Ctrl+W: delete word
          — Ctrl+A: start of line
          — Ctrl+E: end of line
          — Shift+Tab: cycle mode (plan → thorough → oneshot)
-         — /review <scope>: verify the task is solved + check test coverage
-         — /simplify <scope>: refactor for clarity, reuse, and idiomatic style
-         — /flat: toggle flat mode (single-level, no delegation)
-         — Ctrl+V: paste image from clipboard
+         — Ctrl+V: paste image from clipboard (terminal-paste for text)
          — Up/Down: input history
          — Shift+Up/Down: scroll chat
          — PageUp/PageDn: scroll page
@@ -136,7 +142,16 @@ impl App {
     }
 
     pub fn set_error(&mut self, msg: String) {
+        self.messages.push(ChatMessage {
+            role: Role::Assistant,
+            content: msg.clone(),
+            kind: MessageKind::Error,
+            rendered: std::cell::RefCell::new(None),
+        });
         self.error_message = Some(msg);
+        if self.auto_scroll {
+            self.scroll_offset = 0;
+        }
     }
 }
 

@@ -15,8 +15,14 @@ pub(super) fn draw_input(
     first_line_prefix_len: u16,
 ) {
     let img_count = app.pending_image_count();
-    let queue_tag = if app.queue_len() > 0 {
-        format!("[{}q] ", app.queue_len())
+    let queue_tag = if let Some(next) = app.message_queue.front() {
+        let first_line = next.0.lines().next().unwrap_or("");
+        let preview = super::util::truncate(first_line, 30);
+        if app.queue_len() > 1 {
+            format!("[queued +{}: {preview}] ", app.queue_len() - 1)
+        } else {
+            format!("[queued: {preview}] ")
+        }
     } else {
         String::new()
     };

@@ -1,27 +1,68 @@
 pub struct ModelPickerState {
     pub models: Vec<String>,
     pub selected: usize,
+    pub filter: String,
+    pub filtered: Vec<usize>,
 }
 
 impl ModelPickerState {
+    pub fn new(models: Vec<String>, initial_selected: usize) -> Self {
+        let filtered: Vec<usize> = (0..models.len()).collect();
+        Self {
+            models,
+            selected: initial_selected.min(filtered.len().saturating_sub(1)),
+            filter: String::new(),
+            filtered,
+        }
+    }
+
+    pub fn refilter(&mut self) {
+        let needle = self.filter.to_lowercase();
+        self.filtered = self
+            .models
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| needle.is_empty() || m.to_lowercase().contains(&needle))
+            .map(|(i, _)| i)
+            .collect();
+        if self.selected >= self.filtered.len() {
+            self.selected = self.filtered.len().saturating_sub(1);
+        }
+    }
+
+    pub fn push_filter(&mut self, c: char) {
+        self.filter.push(c);
+        self.selected = 0;
+        self.refilter();
+    }
+
+    pub fn pop_filter(&mut self) {
+        self.filter.pop();
+        self.selected = 0;
+        self.refilter();
+    }
+
     pub fn move_up(&mut self) {
         self.selected = self.selected.saturating_sub(1);
     }
     pub fn move_down(&mut self) {
-        if self.selected + 1 < self.models.len() {
+        if self.selected + 1 < self.filtered.len() {
             self.selected += 1;
         }
     }
     pub fn selected(&self) -> Option<&str> {
-        self.models.get(self.selected).map(String::as_str)
+        let &idx = self.filtered.get(self.selected)?;
+        self.models.get(idx).map(String::as_str)
     }
 }
+
+use crate::input::InputState;
 
 pub struct InterviewPickerState {
     pub question: String,
     pub suggestions: Vec<String>,
     pub selected: usize,
-    pub custom_input: String,
+    pub custom_input: InputState,
     pub custom_mode: bool,
     pub answer_tx: Option<tokio::sync::oneshot::Sender<String>>,
 }
@@ -38,8 +79,9 @@ impl InterviewPickerState {
         }
     }
     pub fn submit(&mut self) -> Option<String> {
-        let answer = if self.custom_mode && !self.custom_input.is_empty() {
-            self.custom_input.clone()
+        let custom_text = self.custom_input.text.trim().to_string();
+        let answer = if self.custom_mode && !custom_text.is_empty() {
+            custom_text
         } else {
             self.suggestions.get(self.selected)?.to_string()
         };
@@ -60,7 +102,7 @@ mod tests {
             question: "test?".into(),
             suggestions: vec!["a".into(), "b".into(), "c".into()],
             selected: 0,
-            custom_input: String::new(),
+            custom_input: InputState::new(),
             custom_mode: false,
             answer_tx: None,
         };
@@ -84,7 +126,7 @@ mod tests {
             question: "test?".into(),
             suggestions: vec!["a".into(), "b".into()],
             selected: 0,
-            custom_input: String::new(),
+            custom_input: InputState::new(),
             custom_mode: true,
             answer_tx: None,
         };
@@ -98,7 +140,7 @@ mod tests {
             question: "test?".into(),
             suggestions: vec!["alpha".into(), "beta".into()],
             selected: 1,
-            custom_input: String::new(),
+            custom_input: InputState::new(),
             custom_mode: false,
             answer_tx: None,
         };
@@ -112,7 +154,13 @@ mod tests {
             question: "test?".into(),
             suggestions: vec!["a".into()],
             selected: 0,
-            custom_input: "my answer".into(),
+            custom_input: {
+                let mut s = InputState::new();
+                for c in "my answer".chars() {
+                    s.push_char(c);
+                }
+                s
+            },
             custom_mode: true,
             answer_tx: None,
         };
@@ -126,7 +174,7 @@ mod tests {
             question: "test?".into(),
             suggestions: vec!["fallback".into()],
             selected: 0,
-            custom_input: String::new(),
+            custom_input: InputState::new(),
             custom_mode: true,
             answer_tx: None,
         };
@@ -141,7 +189,7 @@ mod tests {
             question: "test?".into(),
             suggestions: vec!["yes".into()],
             selected: 0,
-            custom_input: String::new(),
+            custom_input: InputState::new(),
             custom_mode: false,
             answer_tx: Some(tx),
         };

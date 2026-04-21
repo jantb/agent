@@ -22,7 +22,7 @@ pub const COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "/mode",
-        desc: "Cycle mode: plan → thorough → oneshot",
+        desc: "Set mode: /mode plan|thorough|oneshot (no arg cycles)",
     },
     SlashCommand {
         name: "/review",
@@ -36,6 +36,27 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "/flat",
         desc: "Toggle flat mode (single-level)",
     },
+    SlashCommand {
+        name: "/memory",
+        desc: "List remembered notes (search: /memory <kw>)",
+    },
+    SlashCommand {
+        name: "/mcp",
+        desc: "Show MCP server status and failure reasons",
+    },
+    SlashCommand {
+        name: "/show",
+        desc: "Show full output: /show last",
+    },
+];
+
+/// Non-selectable keybinding hints rendered below the filtered commands.
+pub const HINTS: &[(&str, &str)] = &[
+    ("Ctrl+L", "clear chat history"),
+    ("Ctrl+V", "paste image from clipboard"),
+    ("Ctrl+W", "delete word"),
+    ("Shift+Tab", "cycle mode"),
+    ("Shift+Enter", "newline"),
 ];
 
 pub struct Autocomplete {

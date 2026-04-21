@@ -107,7 +107,29 @@ pub async fn setup(cfg: SetupConfig) -> anyhow::Result<Setup> {
     let (session, resumed) = match Session::load(&working_dir)? {
         Some(s) => {
             let date = s.updated_at.format("%Y-%m-%d %H:%M").to_string();
-            (s, Some(date))
+            let msg_count = s.messages.len();
+            let last_user = s.messages.iter().rev().find_map(|m| match m {
+                crate::session::SessionMessage::Text {
+                    role: crate::types::Role::User,
+                    content,
+                    ..
+                } => Some(content.clone()),
+                _ => None,
+            });
+            let banner = match last_user {
+                Some(topic) => {
+                    let first_line = topic.lines().next().unwrap_or("").trim();
+                    let preview: String = first_line.chars().take(60).collect();
+                    let ellipsis = if first_line.chars().count() > 60 {
+                        "…"
+                    } else {
+                        ""
+                    };
+                    format!("{date} — {msg_count} msgs · last: {preview}{ellipsis}")
+                }
+                None => format!("{date} — {msg_count} msgs"),
+            };
+            (s, Some(banner))
         }
         None => {
             let s = Session::new(&cfg.model, &working_dir);

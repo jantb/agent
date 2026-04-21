@@ -31,7 +31,13 @@ pub enum UiCommand {
 
 pub fn map_key(key: KeyEvent, streaming: bool) -> UiCommand {
     match (key.code, key.modifiers) {
-        (KeyCode::Char('c'), KeyModifiers::CONTROL) => UiCommand::Quit,
+        (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+            if streaming {
+                UiCommand::Cancel
+            } else {
+                UiCommand::Quit
+            }
+        }
         (KeyCode::Esc, _) => UiCommand::Cancel,
         (KeyCode::Char('w'), KeyModifiers::CONTROL) => UiCommand::DeleteWord,
         (KeyCode::Char('u'), KeyModifiers::CONTROL) => UiCommand::ClearLine,
@@ -46,8 +52,8 @@ pub fn map_key(key: KeyEvent, streaming: bool) -> UiCommand {
         (KeyCode::Right, _) => UiCommand::MoveRight,
         (KeyCode::Up, KeyModifiers::SHIFT) => UiCommand::ScrollUp,
         (KeyCode::Down, KeyModifiers::SHIFT) => UiCommand::ScrollDown,
-        (KeyCode::Up, _) if !streaming => UiCommand::HistoryPrev,
-        (KeyCode::Down, _) if !streaming => UiCommand::HistoryNext,
+        (KeyCode::Up, _) => UiCommand::HistoryPrev,
+        (KeyCode::Down, _) => UiCommand::HistoryNext,
         (KeyCode::PageUp, _) => UiCommand::PageUp,
         (KeyCode::PageDown, _) => UiCommand::PageDown,
         (KeyCode::End, _) => UiCommand::ScrollToBottom,
@@ -73,14 +79,14 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_always_quits() {
+    fn ctrl_c_quits_when_idle_cancels_when_streaming() {
         assert_eq!(
             map_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL), false),
             UiCommand::Quit
         );
         assert_eq!(
             map_key(key(KeyCode::Char('c'), KeyModifiers::CONTROL), true),
-            UiCommand::Quit
+            UiCommand::Cancel
         );
     }
 
@@ -169,18 +175,15 @@ mod tests {
     }
 
     #[test]
-    fn streaming_blocks_arrow_and_tab_keys() {
-        // Documents the root cause of the interview picker bug:
-        // when streaming=true, Up/Down/Tab all become Ignore.
-        // The fix is in main.rs where effective_streaming overrides this when a picker is active.
-        assert!(matches!(
+    fn history_nav_works_during_streaming() {
+        assert_eq!(
             map_key(key(KeyCode::Up, KeyModifiers::NONE), true),
-            UiCommand::Ignore
-        ));
-        assert!(matches!(
+            UiCommand::HistoryPrev
+        );
+        assert_eq!(
             map_key(key(KeyCode::Down, KeyModifiers::NONE), true),
-            UiCommand::Ignore
-        ));
+            UiCommand::HistoryNext
+        );
         assert!(matches!(
             map_key(key(KeyCode::Tab, KeyModifiers::NONE), true),
             UiCommand::Ignore

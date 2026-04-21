@@ -1,6 +1,7 @@
 mod chat;
 mod input;
 mod picker;
+mod plan;
 mod status;
 mod title;
 mod tree;
@@ -17,8 +18,16 @@ use tree::TREE_PANEL_WIDTH;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let img_count = app.pending_image_count();
-    let queue_tag_len = if app.queue_len() > 0 {
-        format!("[{}q] ", app.queue_len()).chars().count()
+    let queue_tag_len = if let Some(next) = app.message_queue.front() {
+        let first_line = next.0.lines().next().unwrap_or("");
+        let preview = util::truncate(first_line, 30);
+        if app.queue_len() > 1 {
+            format!("[queued +{}: {preview}] ", app.queue_len() - 1)
+                .chars()
+                .count()
+        } else {
+            format!("[queued: {preview}] ").chars().count()
+        }
     } else {
         0
     };
@@ -52,19 +61,31 @@ pub fn draw(frame: &mut Frame, app: &App) {
     ])
     .areas(frame.area());
 
-    let (chat_area, tree_area_opt) = if app.has_tree() && body_area.width > TREE_PANEL_WIDTH + 20 {
-        let [tree, chat] =
+    let show_side =
+        (app.has_tree() || !app.plan.is_empty()) && body_area.width > TREE_PANEL_WIDTH + 20;
+    let (chat_area, side_area_opt) = if show_side {
+        let [side, chat] =
             Layout::horizontal([Constraint::Length(TREE_PANEL_WIDTH), Constraint::Min(20)])
                 .areas(body_area);
-        (chat, Some(tree))
+        (chat, Some(side))
     } else {
         (body_area, None)
     };
 
     title::draw_title(frame, app, title_area);
     chat::draw_chat(frame, app, chat_area);
-    if let Some(tree_area) = tree_area_opt {
-        tree::draw_tree_panel(frame, app, tree_area);
+    if let Some(side_area) = side_area_opt {
+        if app.has_tree() && !app.plan.is_empty() {
+            let plan_h = (app.plan.len() as u16 + 1).min(side_area.height / 2).max(3);
+            let [tree_area, plan_area] =
+                Layout::vertical([Constraint::Min(3), Constraint::Length(plan_h)]).areas(side_area);
+            tree::draw_tree_panel(frame, app, tree_area);
+            plan::draw_plan_panel(frame, app, plan_area);
+        } else if app.has_tree() {
+            tree::draw_tree_panel(frame, app, side_area);
+        } else {
+            plan::draw_plan_panel(frame, app, side_area);
+        }
     }
     input::draw_input(frame, app, input_area, first_prefix_len);
     status::draw_status(frame, app, status_area);

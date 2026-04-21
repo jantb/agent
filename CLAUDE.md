@@ -12,31 +12,63 @@ Rust TUI agent powered by Ollama, built with ratatui + tokio + crossterm.
 
 ```
 src/
-  main.rs       — CLI args, terminal setup, event loop
-  agent.rs      — AgentTask: turn loop, tool dispatch, session save
-  ollama.rs     — Ollama HTTP streaming client, think-tag parsing
-  mcp.rs        — MCP server connections and tool execution
-  tools/
-    mod.rs      — Tool definitions, dispatch, path sandboxing
-    builtin.rs  — All built-in tool implementations
-  app.rs        — UI state (messages, scroll, streaming flags)
-  ui.rs         — Ratatui rendering
-  types.rs      — Core types (Message, ToolCall, AgentEvent, etc.)
-  session.rs    — Session persistence (.agent/session.json)
-  memory.rs     — Persistent memory storage (.agent/memory/)
-  input.rs      — Text input state (cursor, history, paste)
-  keys.rs       — Keybinding map
-  markdown.rs   — Markdown-to-ratatui renderer
-  config.rs     — .mcp.json parsing
+  main.rs          — thin entry: Cli + fn main → dispatches to headless or tui
+  bootstrap.rs     — setup(): logging, ollama, MCP, session load, agent spawn
+  headless.rs      — run_script(): script/headless mode runner
+  lib.rs           — module declarations
+  agent/           — turn loop + tool dispatch
+    mod.rs         — AgentTask struct, root run loop
+    turn.rs        — execute_turn, handle_tool_calls, handle_update_plan
+    subtask.rs     — run_subtask, run_single_task, SubtaskExitGuard
+    loop_detect.rs — text_fingerprint, check_repeated_text, truncate_subtask_result
+  app/             — UI state (no rendering)
+    mod.rs         — App struct + constructor
+    messages.rs    — chat message ops, queue, pending images
+    streaming.rs   — streaming state + token stats
+    scroll.rs      — scroll viewport
+    tree.rs        — subtask tree state
+    plan.rs        — plan state
+    pickers.rs     — ModelPickerState, InterviewPickerState
+  ollama/          — Ollama HTTP client
+    mod.rs         — OllamaClient, stream_turn, NUM_CTX
+    stream.rs      — LineParser, ThinkTagFilter
+    parse.rs       — parse_context_window
+  prompts.rs       — system prompt builders + mode appendices
+  session/         — persisted conversation state
+    mod.rs         — Session struct, SessionMessage enum
+    persist.rs     — load, save, save_subtask
+    history.rs     — to_ollama_history, to_compressed_history
+    convert.rs     — SessionMessage → ChatMessage conversion
+    gitignore.rs   — ensure_gitignore
+  tools/           — tool definitions + dispatch
+    mod.rs         — re-exports, IGNORE_DIRS, PLAN_WRITE_TOOLS, resolve_safe
+    definitions.rs — JSON schemas for all tools
+    dispatch.rs    — execute_built_in_with_mode
+    selection.rs   — tools_for_depth, is_flat_model
+    builtin/       — builtin tool impls (file_io, memory_tools, search, text_ops)
+  tui/             — TUI event loop + command executor
+    mod.rs         — run_loop, TerminalGuard
+    events.rs      — AgentEvent → App mutation
+    commands.rs    — slash commands, key-driven actions
+  ui/              — ratatui rendering (pure, takes &App)
+    mod.rs         — draw coordinator
+    chat.rs, input.rs, status.rs, tree.rs, title.rs, picker.rs, util.rs
+  memory.rs, mcp.rs, types.rs, keys.rs (keymap), input.rs, markdown.rs,
+  autocomplete.rs, config.rs, highlight.rs, script.rs
 ```
 
 ## Conventions
 
 - Idiomatic compact Rust. No unnecessary abstractions.
-- All file tools are sandboxed to the working directory via `resolve_safe()`.
-- Logging via `tracing` to `.agent/agent.log` (non-blocking file appender). Use `RUST_LOG=trace` for verbose output.
+- All file tools are sandboxed to the working directory via `resolve_safe()` in `src/tools/mod.rs`.
+- Logging via `tracing` to `.agent/agent.log` (non-blocking file appender; `WorkerGuard` held in `Setup`). Use `RUST_LOG=trace` for verbose output.
 - Tests live in `#[cfg(test)] mod tests` at the bottom of each file.
 - Session data in `.agent/` (gitignored).
+
+## Security
+
+- `resolve_safe()` (in `src/tools/mod.rs`) sandboxes all file tool paths to the working directory using lexical normalization + canonicalized-root prefix check.
+- **Known limitation**: symlinks inside the working directory that point outside are NOT detected. The lexical path stays under the prefix so `starts_with` passes; the OS resolves the symlink at open-time. For strict isolation, run the agent in a chroot or container.
 
 ## Build & test
 

@@ -57,18 +57,58 @@ pub async fn apply_command(
                 return;
             }
             UiCommand::InsertChar(c) => {
-                if let Some(picker) = app.interview_picker.as_mut() {
-                    if picker.custom_mode {
-                        picker.custom_input.push(c);
-                    }
+                let picker = app.interview_picker.as_mut().unwrap();
+                if picker.custom_mode {
+                    picker.custom_input.push_char(c);
                 }
                 return;
             }
             UiCommand::Backspace => {
-                if let Some(picker) = app.interview_picker.as_mut() {
-                    if picker.custom_mode {
-                        picker.custom_input.pop();
-                    }
+                let picker = app.interview_picker.as_mut().unwrap();
+                if picker.custom_mode {
+                    picker.custom_input.pop_char();
+                }
+                return;
+            }
+            UiCommand::DeleteWord => {
+                let picker = app.interview_picker.as_mut().unwrap();
+                if picker.custom_mode {
+                    picker.custom_input.delete_word();
+                }
+                return;
+            }
+            UiCommand::ClearLine => {
+                let picker = app.interview_picker.as_mut().unwrap();
+                if picker.custom_mode {
+                    picker.custom_input.clear_line();
+                }
+                return;
+            }
+            UiCommand::MoveLeft => {
+                let picker = app.interview_picker.as_mut().unwrap();
+                if picker.custom_mode {
+                    picker.custom_input.move_left();
+                }
+                return;
+            }
+            UiCommand::MoveRight => {
+                let picker = app.interview_picker.as_mut().unwrap();
+                if picker.custom_mode {
+                    picker.custom_input.move_right();
+                }
+                return;
+            }
+            UiCommand::MoveToStart => {
+                let picker = app.interview_picker.as_mut().unwrap();
+                if picker.custom_mode {
+                    picker.custom_input.move_to_start();
+                }
+                return;
+            }
+            UiCommand::MoveToEnd => {
+                let picker = app.interview_picker.as_mut().unwrap();
+                if picker.custom_mode {
+                    picker.custom_input.move_to_end();
                 }
                 return;
             }
@@ -117,9 +157,20 @@ pub async fn apply_command(
                 }
                 return;
             }
+            UiCommand::InsertChar(c) => {
+                app.model_picker.as_mut().unwrap().push_filter(c);
+                return;
+            }
+            UiCommand::Backspace => {
+                app.model_picker.as_mut().unwrap().pop_filter();
+                return;
+            }
+            UiCommand::Cancel => {
+                app.model_picker = None;
+                return;
+            }
             UiCommand::Quit => {} // fall through
             _ => {
-                app.model_picker = None;
                 return;
             }
         }
@@ -200,6 +251,8 @@ pub async fn apply_command(
                 if let Err(e) = action_tx.send(UserAction::Cancel).await {
                     tracing::error!("failed to send Cancel action: {e}");
                 }
+            } else if !app.input.is_empty() {
+                app.input.clear_line();
             }
         }
         UiCommand::Submit => {
@@ -280,10 +333,7 @@ pub async fn handle_slash_or_send(
                 .iter()
                 .position(|m| m == &app.model_name)
                 .unwrap_or(0);
-            app.model_picker = Some(ModelPickerState {
-                models: app.available_models.clone(),
-                selected: sel,
-            });
+            app.model_picker = Some(ModelPickerState::new(app.available_models.clone(), sel));
         }
     } else if text.trim() == "/clear" || text.trim() == "/new" {
         app.clear_messages();
@@ -297,14 +347,89 @@ pub async fn handle_slash_or_send(
             kind: MessageKind::Text,
             rendered: std::cell::RefCell::new(None),
         });
-    } else if text.trim() == "/mode" {
-        app.mode = app.mode.cycle();
+    } else if let Some(arg) = text
+        .trim()
+        .strip_prefix("/mode")
+        .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))
+        .map(str::trim)
+    {
+        use crate::types::AgentMode;
+        let parsed = match arg {
+            "" => Some(app.mode.cycle()),
+            "plan" => Some(AgentMode::Plan),
+            "thorough" => Some(AgentMode::Thorough),
+            "oneshot" => Some(AgentMode::Oneshot),
+            _ => None,
+        };
+        match parsed {
+            Some(m) => {
+                app.mode = m;
+                app.messages.push(ChatMessage {
+                    role: Role::Assistant,
+                    content: format!("Mode: {}", app.mode.label()),
+                    kind: MessageKind::Text,
+                    rendered: std::cell::RefCell::new(None),
+                });
+            }
+            None => app.set_error(format!(
+                "unknown mode '{arg}' — expected plan, thorough, or oneshot"
+            )),
+        }
+    } else if let Some(arg) = text
+        .trim()
+        .strip_prefix("/memory")
+        .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))
+        .map(str::trim)
+    {
+        let working_dir = app.working_dir.clone();
+        let result = if arg.is_empty() {
+            crate::memory::list_memories(&working_dir)
+        } else {
+            crate::memory::recall_memories(&working_dir, arg)
+        };
+        match result {
+            Ok(body) => app.messages.push(ChatMessage {
+                role: Role::Assistant,
+                content: body,
+                kind: MessageKind::Text,
+                rendered: std::cell::RefCell::new(None),
+            }),
+            Err(e) => app.set_error(format!("memory: {e}")),
+        }
+    } else if text.trim() == "/mcp" {
+        let mut lines = Vec::new();
+        if app.mcp_connected.is_empty() && app.mcp_failed.is_empty() {
+            lines.push("No MCP servers configured.".to_string());
+        } else {
+            for name in &app.mcp_connected {
+                lines.push(format!("● {name}: connected"));
+            }
+            for (name, reason) in &app.mcp_failed {
+                lines.push(format!("✗ {name}: {reason}"));
+            }
+        }
         app.messages.push(ChatMessage {
             role: Role::Assistant,
-            content: format!("Mode: {}", app.mode.label()),
+            content: lines.join("\n"),
             kind: MessageKind::Text,
             rendered: std::cell::RefCell::new(None),
         });
+    } else if text.trim() == "/show last" || text.trim() == "/show" {
+        match app
+            .messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.kind, MessageKind::ToolResult { .. }))
+            .map(|m| m.content.clone())
+        {
+            Some(body) => app.messages.push(ChatMessage {
+                role: Role::Assistant,
+                content: format!("```\n{body}\n```"),
+                kind: MessageKind::Text,
+                rendered: std::cell::RefCell::new(None),
+            }),
+            None => app.set_error("no tool result to show".into()),
+        }
     } else if text.trim() == "/flat" {
         app.flat = !app.flat;
         let label = if app.flat {
