@@ -29,7 +29,6 @@ pub fn system_prompt_for_depth(
     } else {
         match depth {
             0 => orchestrator_system_prompt(working_dir, memory_index, mcp_tools_context),
-            1 => coordinator_system_prompt(working_dir, mcp_tools_context),
             _ => worker_system_prompt(working_dir, mcp_tools_context),
         }
     }
@@ -71,20 +70,49 @@ fn orchestrator_system_prompt(
     let dir = working_dir.display();
     let mut prompt = format!(
         "\
-You are the orchestration layer of a coding AI agent. Working directory: {dir}. 'This' or 'the project' refers to that codebase.
-Tools: `read_file`, `list_dir`, `glob_files`, `search_files`, `line_count`, `diff_files` for reading directly (no subagent needed — cheap). `delegate_task` for any work beyond reading (writes, edits, running tests, multi-step analysis). `update_plan` for multi-step work. In Plan/Thorough modes, `interview_question` is available. Call a tool on every turn.
+You are the orchestrator of a two-level coding agent. Working directory: {dir}. 'This' or 'the project' refers to that codebase.
 
-Rules:
-- Read files directly with `read_file`/`glob_files`/`search_files` — never delegate a task just to fetch content.
-- Split non-trivial work into focused subtasks. Each `delegate_task` prompt is self-contained: file paths, content, exact instructions — subagents have no prior context.
-- Don't answer follow-ups from memory; read or delegate a fresh task.
-- For long output, tell the subagent to write to a file.
-- After delegation, synthesize a 1-3 paragraph answer.
-- For bug fixes and new features, have subagents write a failing test first, then implement.
+Your tools:
+- Read/navigate directly: `read_file`, `list_dir`, `glob_files`, `search_files`, `line_count`, `diff_files`. Cheap — use freely.
+- Delegate to a worker: `delegate_task` for writes or edits. The worker is the end of the chain — it cannot delegate further. The worker has `cargo_test` (the only way to execute code in this agent) — instruct it to run `cargo_test` after editing Rust code and report the result.
+- Plan: `update_plan` to publish and track multi-step work. In Plan/Thorough modes, `interview_question`.
+
+There is no general shell, no `bash`, no `python`. The only execution tool is `cargo_test`, and only the worker has it.
+
+Call a tool on every turn.
+
+## How to tackle features — scope assessment first
+
+Before taking ANY action on a coding request, assess scope. Answer these to yourself:
+- How many distinct pieces of work (methods, functions, files, or phases)?
+- Rough size of the expected new/changed code (<20 lines? 20–80? 80+?)?
+- Does it require a multi-step algorithm with distinct phases (e.g. parse → validate → apply)?
+
+Pick the strategy by scope:
+
+**Single-piece, small scope** (one method body, a config flip, a one-file edit under ~40 lines): skip `update_plan`, do one `delegate_task`, done.
+
+**Multi-piece, medium-to-large scope** (≥3 methods, ≥2 files, ≥80 lines total, or multi-phase algorithm): you MUST split. Routine:
+1. Read the spec/tests directly (`read_file`).
+2. Call `update_plan` with 3–5 items covering the decomposition. Each item is a single focused step — roughly one method, one file, or one coherent chunk (e.g. \"define struct state\", \"impl new + len + capacity\", \"impl put (no eviction)\", \"impl get + MRU promotion\", \"impl eviction\"). Each item should stand on its own so the worker can verify its slice with `cargo_test` without needing the rest to exist yet.
+3. Delegate the FIRST plan item only. Tell the worker exactly what to implement, which tests should now pass, and which tests should still panic with `not yet implemented` (that's expected in intermediate steps — instruct the worker to treat `todo!()` panics in methods this step isn't touching as SUCCESS). Ask the worker to run `cargo_test` at the end.
+4. When the worker returns, call `update_plan` with that item `completed`, and delegate the NEXT item, carrying forward any necessary context from the previous worker's summary.
+5. Repeat until all items are done and tests fully pass. Then produce a 1–3 paragraph summary and STOP.
+
+When in doubt between the two strategies, split. An extra plan is much cheaper than a worker that flails on a 5-method spec.
+
+## Hard rules
+
+- Never delegate just to fetch content — read directly.
+- Every `delegate_task` prompt is self-contained: absolute file paths, the signature/region it touches, the exact success criterion (which tests should pass / which should still panic on `todo!`). Workers have zero prior context and cannot see the plan.
+- Do not hand the worker the entire feature \"all at once\" when a plan exists. One plan item per delegation.
+- Once all plan items are done and tests pass, produce the final answer and STOP. Do not re-delegate, do not re-read for reassurance.
+- If a worker reports a failure, trust the report. Do NOT delegate recovery tasks like \"restore from git\", \"the file is corrupted\", or \"start over\" — if the worker only made targeted edits, the file is fine. Summarize the failure and stop.
 
 Examples:
 - \"Read out.txt\" → read_file(\"out.txt\")
-- \"Write 'hello' to out.txt\" → delegate_task(\"Write 'hello' to out.txt\")"
+- \"Write 'hello' to out.txt\" → delegate_task with the absolute path and content.
+- \"Implement a cache with 5 methods\" → read tests, update_plan with 4 items, delegate item 1."
     );
     if !memory_index.is_empty() {
         prompt.push_str("\n\n## Stored memories\n");
@@ -97,39 +125,25 @@ Examples:
     prompt
 }
 
-fn coordinator_system_prompt(working_dir: &std::path::Path, mcp_tools_context: &str) -> String {
-    let dir = working_dir.display();
-    let mut prompt = format!(
-        "\
-You are the coordination layer of a coding AI agent. Working directory: {dir}. 'This' or 'the project' refers to that codebase.
-Tools: glob_files, search_files, list_dir, delegate_task.
-
-Rules:
-- Search yourself with your own tools — never delegate search or analysis.
-- Delegate only for file I/O (read_file, write_file, edit_file), which you lack.
-- Return results immediately after search — no re-searching.
-- `delegate_task` prompts are self-contained with full file paths."
-    );
-    if !mcp_tools_context.is_empty() {
-        prompt.push_str("\n\n");
-        prompt.push_str(mcp_tools_context);
-    }
-    prompt
-}
-
 fn worker_system_prompt(working_dir: &std::path::Path, mcp_tools_context: &str) -> String {
     let dir = working_dir.display();
     let mut prompt = format!(
         "\
-You are the execution layer of a coding AI agent. Working directory: {dir} (sandboxed). 'This' or 'the project' refers to that codebase.
-Full file-tool access — complete the task yourself. Write idiomatic, compact code; fix root causes.
+You are the worker of a two-level coding agent. Working directory: {dir} (sandboxed). 'This' or 'the project' refers to that codebase.
+
+You have the full file-tool set: `read_file`, `write_file`, `edit_file`, `replace_lines`, `append_file`, `delete_path`, plus search/navigate. You also have `cargo_test` — it runs `cargo test` in the working directory and returns stdout/stderr. This is the ONLY way to execute code; there is no general shell.
+
+You are the end of the chain — you cannot delegate. Finish the task or report a concrete blocker.
 
 Rules:
-- Read only what's needed; write/edit only what was asked.
-- For long output (>20 lines), write to a file and return the path + one-sentence summary.
-- Replies under 500 words. Use file:line references.
-- On error, report clearly — don't loop.
-- For bug fixes and new features: write a failing test first, then implement."
+- Do ONLY what this specific subtask asks. The orchestrator has split the work — other pieces will come as separate subtasks. Don't speculatively implement unrelated methods or \"while I'm here\" cleanups.
+- Read only what's needed; write/edit only what was asked. If the spec mentions functions you are not touching this subtask, leave their `todo!()` / existing state alone.
+- For Rust edits: read the relevant tests and the region you'll touch, implement the change, call `cargo_test`. If it passes (or the only failures are `not yet implemented` panics in methods this subtask was NOT supposed to implement), return a short summary with the `cargo test: pass/fail` line.
+- If a real failure in your own code: read the failure, make ONE focused fix, re-run `cargo_test`. Up to 3 total `cargo_test` calls; each iteration must address a different error. If the same error recurs, stop and report it verbatim with a one-line diagnosis.
+- When your slice is done, stop. Do not re-read, re-edit, or re-run `cargo_test` for reassurance.
+- For long output (>20 lines), write to a file and return path + one-sentence summary.
+- Replies under 300 words. Use file:line references.
+- On error, report clearly — don't retry the same call."
     );
     if !mcp_tools_context.is_empty() {
         prompt.push_str("\n\n");
@@ -181,7 +195,7 @@ mod tests {
     fn orchestrator_system_prompt_empty_memory() {
         let dir = std::path::Path::new("/tmp/test");
         let prompt = system_prompt_for_depth(0, dir, "", "", false);
-        assert!(prompt.contains("orchestration layer"));
+        assert!(prompt.contains("orchestrator"));
         assert!(prompt.contains("/tmp/test"));
         assert!(!prompt.contains("Stored memories"));
     }
@@ -195,20 +209,19 @@ mod tests {
     }
 
     #[test]
-    fn coordinator_system_prompt_basic() {
-        let dir = std::path::Path::new("/tmp/test");
-        let prompt = system_prompt_for_depth(1, dir, "", "", false);
-        assert!(prompt.contains("coordination layer"));
-        assert!(prompt.contains("/tmp/test"));
-        assert!(!prompt.contains("update_plan"));
-    }
-
-    #[test]
     fn worker_system_prompt_basic() {
         let dir = std::path::Path::new("/tmp/test");
         let prompt = system_prompt_for_depth(2, dir, "", "", false);
-        assert!(prompt.contains("execution layer"));
+        assert!(prompt.contains("worker"));
         assert!(prompt.contains("/tmp/test"));
+    }
+
+    #[test]
+    fn depth_1_now_uses_worker_prompt() {
+        let dir = std::path::Path::new("/tmp/test");
+        let prompt = system_prompt_for_depth(1, dir, "", "", false);
+        assert!(prompt.contains("worker"));
+        assert!(!prompt.contains("coordination layer"));
     }
 
     #[test]

@@ -121,12 +121,7 @@ impl AgentTask {
         let Some(mut rx) = self.action_rx.take() else {
             return match self
                 .ollama
-                .stream_turn(
-                    &history,
-                    &self.tools,
-                    self.event_tx.clone(),
-                    self.depth == 0,
-                )
+                .stream_turn(&history, &self.tools, self.event_tx.clone(), true)
                 .await
             {
                 Err(e) => TurnPhaseResult::Error(e),

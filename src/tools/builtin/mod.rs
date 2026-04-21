@@ -1,7 +1,10 @@
+mod cargo;
 mod file_io;
 mod memory_tools;
 mod search;
 mod text_ops;
+
+pub use cargo::run_cargo_test;
 
 pub use file_io::{
     run_append_file, run_delete_path, run_list_dir, run_read_file, run_read_image, run_read_pdf,

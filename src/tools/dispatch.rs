@@ -67,6 +67,7 @@ pub(crate) async fn execute_built_in_with_mode(
         "delete_path" => builtin::run_delete_path(call, working_dir).await,
         "glob_files" => builtin::run_glob_files(call, working_dir).await,
         "line_count" => builtin::run_line_count(call, working_dir).await,
+        "cargo_test" => builtin::run_cargo_test(call, working_dir).await,
         "read_pdf" => builtin::run_read_pdf(call, working_dir).await,
         "remember" => builtin::run_remember(call, working_dir).await,
         "recall" => builtin::run_recall(call, working_dir).await,

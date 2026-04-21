@@ -505,7 +505,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_tool_excluded_at_depth_1_hierarchical() {
+    fn mcp_tool_included_at_depth_1_hierarchical() {
         use crate::tools::built_in_tool_definitions;
         use crate::tools::selection::tools_for_depth;
         use crate::types::AgentMode;
@@ -516,10 +516,10 @@ mod tests {
         let tools = tools_for_depth(&all, 1, false, AgentMode::Oneshot);
         let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(
-            !names.contains(&"test_tool"),
-            "MCP tools must NOT be available at depth 1 hierarchical"
+            names.contains(&"test_tool"),
+            "MCP tools must be available at depth 1 (worker tier)"
         );
-        assert!(names.contains(&"delegate_task"));
+        assert!(!names.contains(&"delegate_task"));
     }
 
     #[test]

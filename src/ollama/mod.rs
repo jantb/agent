@@ -13,7 +13,7 @@ use crate::types::{AgentEvent, Message, Role, ToolCall, ToolDefinition, TurnOutc
 use parse::parse_context_window;
 use stream::{LineParser, ThinkTagFilter};
 
-pub const NUM_CTX: u64 = 65_536;
+pub const NUM_CTX: u64 = 131_072;
 
 static CALL_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 

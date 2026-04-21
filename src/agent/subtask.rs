@@ -55,7 +55,7 @@ impl AgentTask {
         prompt: String,
         custom_system: Option<String>,
     ) -> String {
-        const MAX_DEPTH: usize = 3;
+        const MAX_DEPTH: usize = 2;
         if self.depth + 1 >= MAX_DEPTH {
             return format!(
                 "error: max delegation depth ({MAX_DEPTH}) reached — execute the task directly"

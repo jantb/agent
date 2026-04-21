@@ -13,9 +13,9 @@ pub fn is_flat_model(model: &str) -> bool {
 
 /// Filter the full tool set to the subset appropriate for a given depth.
 /// When `flat` is true, all depths get worker tools (no delegate_task).
+/// Two-tier model:
 /// depth 0 (orchestrator): delegate_task + update_plan + read-only file tools
-/// depth 1 (coordinator): delegate_task + navigation tools (no update_plan)
-/// depth 2+ (worker):     all tools except delegate_task and update_plan
+/// depth 1+ (worker):      all tools except delegate_task and update_plan
 pub(crate) fn tools_for_depth(
     all_tools: &[ToolDefinition],
     depth: usize,
@@ -39,17 +39,10 @@ pub(crate) fn tools_for_depth(
             "line_count",
             "diff_files",
         ];
-        const COORDINATOR_TOOLS: &[&str] =
-            &["delegate_task", "glob_files", "search_files", "list_dir"];
         match depth {
             0 => all_tools
                 .iter()
                 .filter(|t| ORCHESTRATOR_TOOLS.contains(&t.name.as_str()))
-                .cloned()
-                .collect(),
-            1 => all_tools
-                .iter()
-                .filter(|t| COORDINATOR_TOOLS.contains(&t.name.as_str()))
                 .cloned()
                 .collect(),
             _ => all_tools
@@ -95,20 +88,6 @@ mod tests {
     }
 
     #[test]
-    fn tools_for_depth_coordinator_has_search_and_delegate() {
-        let all = built_in_tool_definitions();
-        let tools = tools_for_depth(&all, 1, false, AgentMode::Oneshot);
-        let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"delegate_task"));
-        assert!(names.contains(&"glob_files"));
-        assert!(names.contains(&"search_files"));
-        assert!(names.contains(&"list_dir"));
-        assert!(!names.contains(&"read_file"));
-        assert!(!names.contains(&"write_file"));
-        assert!(!names.contains(&"update_plan"));
-    }
-
-    #[test]
     fn tools_for_depth_worker_has_file_tools_no_delegate() {
         let all = built_in_tool_definitions();
         let tools = tools_for_depth(&all, 2, false, AgentMode::Oneshot);
@@ -121,13 +100,15 @@ mod tests {
     }
 
     #[test]
-    fn tools_for_depth_coordinator_exact_set() {
+    fn depth_1_now_gets_worker_tools() {
         let all = built_in_tool_definitions();
         let tools = tools_for_depth(&all, 1, false, AgentMode::Oneshot);
-        let names: std::collections::HashSet<_> = tools.iter().map(|t| t.name.as_str()).collect();
-        let expected: std::collections::HashSet<&str> =
-            ["delegate_task", "glob_files", "search_files", "list_dir"].into();
-        assert_eq!(names, expected);
+        let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"write_file"));
+        assert!(names.contains(&"edit_file"));
+        assert!(!names.contains(&"delegate_task"));
+        assert!(!names.contains(&"update_plan"));
     }
 
     #[test]
@@ -144,8 +125,12 @@ mod tests {
     }
 
     #[test]
-    fn tools_for_depth_3_same_as_depth_2() {
+    fn tools_for_depth_1_2_3_all_worker() {
         let all = built_in_tool_definitions();
+        let mut d1: Vec<_> = tools_for_depth(&all, 1, false, AgentMode::Oneshot)
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
         let mut d2: Vec<_> = tools_for_depth(&all, 2, false, AgentMode::Oneshot)
             .iter()
             .map(|t| t.name.clone())
@@ -154,8 +139,10 @@ mod tests {
             .iter()
             .map(|t| t.name.clone())
             .collect();
+        d1.sort();
         d2.sort();
         d3.sort();
+        assert_eq!(d1, d2);
         assert_eq!(d2, d3);
     }
 
@@ -281,13 +268,6 @@ mod tests {
         assert!(is_flat_model("gemma4:31b-cloud"));
         assert!(!is_flat_model("gemma4:26b"));
         assert!(!is_flat_model("gemma4:e4b"));
-    }
-
-    #[test]
-    fn update_plan_not_in_coordinator_tools() {
-        let all = built_in_tool_definitions();
-        let coordinator = tools_for_depth(&all, 1, false, AgentMode::Oneshot);
-        assert!(coordinator.iter().all(|t| t.name != "update_plan"));
     }
 
     #[test]

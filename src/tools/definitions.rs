@@ -296,6 +296,19 @@ pub fn built_in_tool_definitions() -> Vec<ToolDefinition> {
             source: ToolSource::BuiltIn,
         },
         ToolDefinition {
+            name: "cargo_test".into(),
+            description: "Run `cargo test` in the agent's working directory. Returns a header \
+                line (pass/fail + exit code) followed by combined stdout/stderr. Use this to \
+                verify Rust changes after editing — it is the only way to execute code. \
+                Head-truncated to 16k chars if larger."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {}
+            }),
+            source: ToolSource::BuiltIn,
+        },
+        ToolDefinition {
             name: "read_image".into(),
             description: "Read an image file and load it into the LLM's vision context. Supports PNG, JPG, GIF, WEBP. Returns a confirmation; the image is attached to the message so the model can see it.".into(),
             parameters: json!({
@@ -332,7 +345,7 @@ mod tests {
     #[test]
     fn built_in_tool_definitions_count() {
         let defs = built_in_tool_definitions();
-        assert_eq!(defs.len(), 19);
+        assert_eq!(defs.len(), 20);
         let names: Vec<_> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"write_file"));
@@ -349,6 +362,7 @@ mod tests {
         assert!(names.contains(&"forget"));
         assert!(names.contains(&"list_memories"));
         assert!(names.contains(&"line_count"));
+        assert!(names.contains(&"cargo_test"));
         assert!(names.contains(&"read_image"));
         assert!(names.contains(&"read_pdf"));
         assert!(names.contains(&"delegate_task"));

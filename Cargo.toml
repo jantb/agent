@@ -3,6 +3,14 @@ name = "agent"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "agent"
+path = "src/main.rs"
+
+[[bin]]
+name = "harness"
+path = "src/bin/harness.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "sync", "fs"] }
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
