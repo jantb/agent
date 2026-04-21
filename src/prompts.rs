@@ -72,18 +72,19 @@ fn orchestrator_system_prompt(
     let mut prompt = format!(
         "\
 You are the orchestration layer of a coding AI agent. Working directory: {dir}. 'This' or 'the project' refers to that codebase.
-Your primary tool is `delegate_task`; also `update_plan` for multi-step work. In Plan/Thorough modes, `interview_question` is available. Call a tool on every turn.
+Tools: `read_file`, `list_dir`, `glob_files`, `search_files`, `line_count`, `diff_files` for reading directly (no subagent needed — cheap). `delegate_task` for any work beyond reading (writes, edits, running tests, multi-step analysis). `update_plan` for multi-step work. In Plan/Thorough modes, `interview_question` is available. Call a tool on every turn.
 
 Rules:
-- Split the goal into focused subtasks. Each `delegate_task` prompt is self-contained: file paths, content, exact instructions — subagents have no prior context.
-- Don't answer follow-ups from memory; delegate a fresh task.
+- Read files directly with `read_file`/`glob_files`/`search_files` — never delegate a task just to fetch content.
+- Split non-trivial work into focused subtasks. Each `delegate_task` prompt is self-contained: file paths, content, exact instructions — subagents have no prior context.
+- Don't answer follow-ups from memory; read or delegate a fresh task.
 - For long output, tell the subagent to write to a file.
 - After delegation, synthesize a 1-3 paragraph answer.
 - For bug fixes and new features, have subagents write a failing test first, then implement.
 
 Examples:
-- \"Write hello to out.txt\" → delegate_task(\"Write 'hello' to out.txt\")
-- \"Search for pub fn in src/\" → delegate_task(\"Search .rs files under src/ for 'pub fn'. List each function name and file.\")"
+- \"Read out.txt\" → read_file(\"out.txt\")
+- \"Write 'hello' to out.txt\" → delegate_task(\"Write 'hello' to out.txt\")"
     );
     if !memory_index.is_empty() {
         prompt.push_str("\n\n## Stored memories\n");
@@ -154,12 +155,12 @@ You have `interview_question`. You MUST call it at least once before starting �
 Don't ask for the sake of asking. If the user replies \"[DONE]\", stop and proceed.";
 
 pub const REVIEW_SKILL_PREAMBLE: &str = "[Skill: review]\n\
-This turn is a verification pass: did we actually solve the user's task, and is the test coverage adequate?\n\
-- Re-read the task description and the code that addresses it. Trace the flow end-to-end.\n\
-- Check correctness: does the implementation actually do what was asked? Are edge cases handled? Are error paths sensible?\n\
-- Check tests: is the new/changed behavior covered? Are happy-path and edge-case tests present? Run the test suite if possible.\n\
-- Cite `file:line` for every finding. If coverage is thin, propose the specific missing tests.\n\
-- Do NOT refactor in this pass. Note any unrelated quality issues briefly and move on.\n\n\
+This turn is a verification pass. The orchestrator does all analysis — read files directly with `read_file`, `glob_files`, `search_files`; no `delegate_task` calls just to fetch content.\n\
+- Delegate only for running tests or non-trivial analysis work that requires the full tool set.\n\
+- Check correctness: does the implementation do what was asked? Are edge cases and error paths handled?\n\
+- Check test coverage: is new/changed behavior covered? Are happy-path and edge-case tests present?\n\
+- Cite `file:line` for every finding. If coverage is thin, propose specific missing tests.\n\
+- Do NOT refactor in this pass. Note unrelated quality issues briefly with `file:line` references.\n\n\
 User's review scope: ";
 
 pub const SIMPLIFY_SKILL_PREAMBLE: &str = "[Skill: simplify]\n\
@@ -251,7 +252,9 @@ mod tests {
         let dir = std::path::Path::new("/tmp/test");
         let prompt = system_prompt_for_depth(0, dir, "", "", false);
         assert!(!prompt.contains("Your ONLY tool"));
-        assert!(prompt.contains("primary tool"));
+        assert!(!prompt.contains("primary tool"));
+        assert!(prompt.contains("read_file"));
+        assert!(prompt.contains("delegate_task"));
     }
 
     #[test]
@@ -320,6 +323,8 @@ mod tests {
         assert!(REVIEW_SKILL_PREAMBLE.contains("User's review scope:"));
         assert!(REVIEW_SKILL_PREAMBLE.contains("test coverage"));
         assert!(REVIEW_SKILL_PREAMBLE.contains("Do NOT refactor"));
+        assert!(REVIEW_SKILL_PREAMBLE.contains("orchestrator"));
+        assert!(REVIEW_SKILL_PREAMBLE.contains("read_file"));
     }
 
     #[test]

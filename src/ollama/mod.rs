@@ -104,19 +104,18 @@ impl OllamaClient {
         json!(arr)
     }
 
-    pub async fn stream_turn(
+    fn build_request_body(
         &self,
         history: &[Message],
         tools: &[ToolDefinition],
-        tx: mpsc::Sender<AgentEvent>,
-    ) -> anyhow::Result<TurnOutcome> {
-        let url = format!("{}/api/chat", self.base_url);
-        let body = json!({
+        think: bool,
+    ) -> serde_json::Value {
+        json!({
             "model": self.current_model(),
             "messages": self.messages_to_json(history),
             "tools": Self::tools_to_json(tools),
             "stream": true,
-            "think": true,
+            "think": think,
             "options": {
                 "temperature": 1.0,
                 "top_p": 0.95,
@@ -124,7 +123,18 @@ impl OllamaClient {
                 "num_predict": 8192,
                 "num_ctx": NUM_CTX
             }
-        });
+        })
+    }
+
+    pub async fn stream_turn(
+        &self,
+        history: &[Message],
+        tools: &[ToolDefinition],
+        tx: mpsc::Sender<AgentEvent>,
+        think: bool,
+    ) -> anyhow::Result<TurnOutcome> {
+        let url = format!("{}/api/chat", self.base_url);
+        let body = self.build_request_body(history, tools, think);
 
         debug!(
             model = %self.current_model(),
@@ -366,6 +376,24 @@ mod tests {
         let msg = Message::new(Role::User, "hello".into());
         let json = client.messages_to_json(&[msg]);
         assert!(json[0].get("images").is_none());
+    }
+
+    #[test]
+    fn build_request_body_think_true() {
+        let http = reqwest::Client::new();
+        let client = OllamaClient::new("http://localhost:11434", "gemma4:26b", http);
+        let history = vec![Message::new(Role::User, "hello".into())];
+        let body = client.build_request_body(&history, &[], true);
+        assert_eq!(body["think"], true);
+    }
+
+    #[test]
+    fn build_request_body_think_false() {
+        let http = reqwest::Client::new();
+        let client = OllamaClient::new("http://localhost:11434", "gemma4:26b", http);
+        let history = vec![Message::new(Role::User, "hello".into())];
+        let body = client.build_request_body(&history, &[], false);
+        assert_eq!(body["think"], false);
     }
 
     #[test]

@@ -13,7 +13,7 @@ pub fn is_flat_model(model: &str) -> bool {
 
 /// Filter the full tool set to the subset appropriate for a given depth.
 /// When `flat` is true, all depths get worker tools (no delegate_task).
-/// depth 0 (orchestrator): delegate_task + update_plan
+/// depth 0 (orchestrator): delegate_task + update_plan + read-only file tools
 /// depth 1 (coordinator): delegate_task + navigation tools (no update_plan)
 /// depth 2+ (worker):     all tools except delegate_task and update_plan
 pub(crate) fn tools_for_depth(
@@ -29,12 +29,22 @@ pub(crate) fn tools_for_depth(
             .cloned()
             .collect()
     } else {
+        const ORCHESTRATOR_TOOLS: &[&str] = &[
+            "delegate_task",
+            "update_plan",
+            "read_file",
+            "list_dir",
+            "glob_files",
+            "search_files",
+            "line_count",
+            "diff_files",
+        ];
         const COORDINATOR_TOOLS: &[&str] =
             &["delegate_task", "glob_files", "search_files", "list_dir"];
         match depth {
             0 => all_tools
                 .iter()
-                .filter(|t| t.name == "delegate_task" || t.name == "update_plan")
+                .filter(|t| ORCHESTRATOR_TOOLS.contains(&t.name.as_str()))
                 .cloned()
                 .collect(),
             1 => all_tools
@@ -64,15 +74,24 @@ mod tests {
     use crate::tools::built_in_tool_definitions;
 
     #[test]
-    fn tools_for_depth_orchestrator_has_only_delegate() {
+    fn tools_for_depth_orchestrator_has_reads_and_delegate() {
         let all = built_in_tool_definitions();
         let tools = tools_for_depth(&all, 0, false, AgentMode::Oneshot);
         let names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"delegate_task"));
         assert!(names.contains(&"update_plan"));
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"list_dir"));
+        assert!(names.contains(&"glob_files"));
+        assert!(names.contains(&"search_files"));
+        assert!(names.contains(&"line_count"));
+        assert!(names.contains(&"diff_files"));
         assert!(!names.contains(&"write_file"));
-        assert!(!names.contains(&"read_file"));
-        assert_eq!(tools.len(), 2);
+        assert!(!names.contains(&"edit_file"));
+        assert!(!names.contains(&"replace_lines"));
+        assert!(!names.contains(&"append_file"));
+        assert!(!names.contains(&"delete_path"));
+        assert_eq!(tools.len(), 8);
     }
 
     #[test]

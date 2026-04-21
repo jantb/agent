@@ -121,7 +121,12 @@ impl AgentTask {
         let Some(mut rx) = self.action_rx.take() else {
             return match self
                 .ollama
-                .stream_turn(&history, &self.tools, self.event_tx.clone())
+                .stream_turn(
+                    &history,
+                    &self.tools,
+                    self.event_tx.clone(),
+                    self.depth == 0,
+                )
                 .await
             {
                 Err(e) => TurnPhaseResult::Error(e),
@@ -131,9 +136,12 @@ impl AgentTask {
         };
         let mut deferred: Vec<super::UserAction> = Vec::new();
         let result = {
-            let outcome_fut = self
-                .ollama
-                .stream_turn(&history, &self.tools, self.event_tx.clone());
+            let outcome_fut = self.ollama.stream_turn(
+                &history,
+                &self.tools,
+                self.event_tx.clone(),
+                self.depth == 0,
+            );
             tokio::pin!(outcome_fut);
             loop {
                 tokio::select! {
